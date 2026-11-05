@@ -112,6 +112,41 @@ func TestDropsAreLogged(t *testing.T) {
 	}
 }
 
+// Cursor runs Claude Code's hooks as well as its own. On a signed-in machine, its input to the
+// Claude Code hook writes, prints, logs and uploads nothing, even for a setup change (which
+// would be uploaded in the hook) or a SessionEnd (which always starts an upload); Claude
+// Code's own input is handled as usual.
+func TestClaudeCodeHookStandsAsideForCursor(t *testing.T) {
+	home, dir := t.TempDir(), repo(t)
+	config.SaveDevice(home, config.Device{ID: "dev_x", Token: "tok"})
+	set := rules.Defaults() // with the setup rules
+	set.Rules = append(set.Rules, rules.Rule{ID: "no-rm", Effect: rules.Deny, Kinds: []string{"shell"}, Command: "rm -rf /srv*"})
+	rules.Save(config.RulesPath(home), set)
+	var spawned, uploads int
+	o := opts(home, &spawned)
+	o.Upload = func(time.Duration) error { uploads++; return nil }
+	cwd, _ := json.Marshal(dir)
+	for _, in := range []string{
+		`{"conversation_id":"c","generation_id":"g","cursor_version":"2.4.0","cwd":` + string(cwd) + `,"hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"rm -rf ~/.sigdek"}}`,
+		`{"conversation_id":"c","generation_id":"g","cursor_version":"2.4.0","cwd":` + string(cwd) + `,"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /srv/data"}}`,
+		`{"conversation_id":"c","generation_id":"g","cursor_version":"2.4.0","session_id":"c","hook_event_name":"sessionEnd"}`,
+		`{"conversation_id":"c","generation_id":"g","cursor_version":"2.4.0","hook_event_name":"afterAgentThought"}`,
+	} {
+		var out bytes.Buffer
+		Run("claude-code", "", strings.NewReader(in), &out, o)
+		if out.Len() != 0 {
+			t.Fatalf("%s: printed %q", in, out.String())
+		}
+	}
+	if h, _ := store.New(home).Head(); h.Seq != 0 || spawned != 0 || uploads != 0 || errorLog(home) != "" {
+		t.Fatalf("records %d, spawned %d, uploads %d, log %q", h.Seq, spawned, uploads, errorLog(home))
+	}
+	Run("claude-code", "", strings.NewReader(cc(dir, "PreToolUse", `,"tool_name":"Bash","tool_input":{"command":"rm -rf ~/.sigdek"}`)), io.Discard, o)
+	if h, _ := store.New(home).Head(); h.Seq != 1 || uploads != 1 {
+		t.Fatalf("Claude Code's own setup change: records %d, uploads %d", h.Seq, uploads)
+	}
+}
+
 // QA REC-16: Stop fires after every turn and follows the once-a-minute upload limit; only
 // SessionEnd uploads regardless.
 func TestOnlySessionEndBypassesTheUploadLimit(t *testing.T) {

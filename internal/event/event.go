@@ -213,6 +213,30 @@ func SHA256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// RedactedInputHash is an action's input_hash when a secret was stripped from it, which a
+// record says with a nonzero redactions count. The hash of the input as the agent sent it
+// would let a guess at the stripped secret be confirmed, so this is instead the SHA-256 of the
+// RFC 8785 canonical JSON of the action as stored: its kind and name, and its command, path
+// and url when the record has them, and nothing else. For example, the stored action
+// {"kind":"shell","name":"Bash","command":"mysql -u root -p[redacted] -h db.internal",...}
+// hashes {"command":"mysql -u root -p[redacted] -h db.internal","kind":"shell","name":"Bash"}.
+// Anyone holding the record can recompute it. Call it on the final stored values: it must
+// match the record that is written.
+func RedactedInputHash(a *Action) string {
+	m := map[string]any{"kind": a.Kind, "name": a.Name}
+	if a.Command != "" {
+		m["command"] = a.Command
+	}
+	if a.Path != "" {
+		m["path"] = a.Path
+	}
+	if a.URL != "" {
+		m["url"] = a.URL
+	}
+	canon, _ := Canonical(m) // strings only, which can't fail
+	return SHA256Hex(canon)
+}
+
 // Clean makes a string safe to store: valid UTF-8 with no NUL (the server's database can't
 // hold one, so it would refuse the record), and at most max bytes, cut on a rune boundary;
 // max 0 doesn't cut. Both become U+FFFD, as JSON decoding does with a lone surrogate.

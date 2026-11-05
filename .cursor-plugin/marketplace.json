@@ -1,0 +1,14 @@
+{
+  "name": "sigdek",
+  "owner": { "name": "Tekton Software LLC", "email": "hello@sigdek.com" },
+  "metadata": {
+    "description": "SigDek's plugin for Cursor: records what Cursor's agents do, for your team's audit evidence."
+  },
+  "plugins": [
+    {
+      "name": "sigdek",
+      "source": "plugins/cursor",
+      "description": "Records what Cursor's agents do in your repositories (who, which tool, what ran or was blocked) for your team's audit evidence."
+    }
+  ]
+}

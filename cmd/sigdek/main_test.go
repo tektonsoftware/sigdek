@@ -70,8 +70,20 @@ func sigdekHome(t *testing.T) string {
 
 func runHook(t *testing.T, home string, args []string, stdin string) run {
 	t.Helper()
+	return runHookEnv(t, home, nil, args, stdin)
+}
+
+// runHookEnv is runHook with extra environment variables, such as the ones Cursor sets. Any
+// CURSOR_ variables of the test's own environment are left out.
+func runHookEnv(t *testing.T, home string, env []string, args []string, stdin string) run {
+	t.Helper()
 	cmd := exec.Command(binary, append([]string{"hook"}, args...)...)
-	cmd.Env = append(os.Environ(), "SIGDEK_HOME="+home)
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "CURSOR_") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Env = append(append(cmd.Env, "SIGDEK_HOME="+home), env...)
 	cmd.Stdin = strings.NewReader(stdin)
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -149,6 +161,97 @@ func TestHookDenyAndCursorAnswers(t *testing.T) {
 	os.WriteFile(blocker, []byte("x"), 0o600)
 	if r := runHook(t, blocker, []string{"cursor", "beforeSubmitPrompt"}, `{"hook_event_name":"beforeSubmitPrompt","prompt":"hi"}`); r.out != "{\"continue\":true}\n" || r.code != 0 {
 		t.Fatalf("unwritable home: %+v", r)
+	}
+}
+
+// Cursor also runs Claude Code's hooks (Third-Party Imports, on by default), so in a
+// repository set up with `sigdek init` each Cursor action reaches `sigdek hook claude-code`
+// too. That hook stands aside for Cursor's input, with or without Cursor's environment, and
+// still records Claude Code's own input when it runs in Cursor's terminal.
+func TestClaudeCodeHookStandsAsideForCursor(t *testing.T) {
+	home, dir := sigdekHome(t), repoDir(t)
+	rules.Save(config.RulesPath(home), rules.Set{Version: 3, Rules: append(rules.Defaults().Rules,
+		rules.Rule{ID: "no-force-push", Effect: rules.Deny, Kinds: []string{"shell"}, Command: "git push*--force*"})})
+	cursorEnv := []string{"CURSOR_VERSION=2.4.0", "CURSOR_PROJECT_DIR=" + dir, "CLAUDE_PROJECT_DIR=" + dir}
+	cursor := func(event, extra string) string {
+		return fmt.Sprintf(`{"conversation_id":"c1","generation_id":"g1","model":"gpt-5","cursor_version":"2.4.0","hook_event_name":%q,"workspace_roots":[%q],"user_email":"dev@example.com","transcript_path":null%s}`, event, dir, extra)
+	}
+	inputs := []string{
+		cursor("sessionStart", `,"session_id":"c1"`),
+		cursor("beforeSubmitPrompt", `,"prompt":"hello"`),
+		cursor("preToolUse", `,"cwd":"`+filepath.ToSlash(dir)+`","tool_name":"Shell","tool_input":{"command":"git push origin main --force"}`),
+		cursor("preToolUse", `,"tool_name":"Shell","tool_input":{"command":"rm -rf .sigdek"}`),
+		cursor("PreToolUse", `,"tool_name":"Bash","tool_input":{"command":"git push origin main --force"}`),
+		cursor("postToolUse", `,"tool_name":"Shell","tool_input":{"command":"npm test"},"duration":12`),
+		cursor("PostToolUse", `,"tool_name":"Bash","tool_input":{"command":"npm test"}`),
+		cursor("stop", ``),
+		cursor("sessionEnd", `,"session_id":"c1"`),
+	}
+	for _, env := range [][]string{nil, cursorEnv} {
+		for _, in := range inputs {
+			if r := runHookEnv(t, home, env, []string{"claude-code"}, in); r.code != 0 || r.out != "" || r.err != "" {
+				t.Fatalf("env %v, %s: code=%d out=%q err=%q", env, in, r.code, r.out, r.err)
+			}
+		}
+	}
+	if n, _, _ := store.New(home).Verify(); n != 0 {
+		t.Fatalf("recorded %d Cursor events through the Claude Code hook", n)
+	}
+	if b, _ := os.ReadFile(config.ErrorLog(home)); len(b) != 0 {
+		t.Fatalf("error log: %s", b)
+	}
+
+	// Claude Code in Cursor's integrated terminal inherits Cursor's environment: still recorded,
+	// and its Block rules still apply.
+	for _, in := range []string{
+		cc(dir, "SessionStart", `,"source":"startup","model":"claude-opus-5-5"`),
+		cc(dir, "PostToolUse", `,"tool_name":"Bash","tool_input":{"command":"npm test"},"duration_ms":4`),
+	} {
+		if r := runHookEnv(t, home, cursorEnv, []string{"claude-code"}, in); r.code != 0 || r.out != "" {
+			t.Fatalf("%s: %+v", in, r)
+		}
+	}
+	r := runHookEnv(t, home, cursorEnv, []string{"claude-code"}, cc(dir, "PreToolUse", `,"tool_name":"Bash","tool_input":{"command":"git push origin main --force"}`))
+	if r.code != 0 || !strings.Contains(r.out, `"permissionDecision":"deny"`) {
+		t.Fatalf("Claude Code deny in Cursor's terminal: %+v", r)
+	}
+	if n, breaks, err := store.New(home).Verify(); n != 3 || len(breaks) != 0 || err != nil {
+		t.Fatalf("want 3 Claude Code records (start, action, blocked action): n=%d breaks=%v err=%v", n, breaks, err)
+	}
+	// And the Cursor hook itself still records Cursor's input.
+	if r := runHookEnv(t, home, cursorEnv, []string{"cursor", "postToolUse"}, inputs[5]); r.code != 0 || r.out != "{}\n" {
+		t.Fatalf("cursor hook: %+v", r)
+	}
+	if n, _, _ := store.New(home).Verify(); n != 4 {
+		t.Fatalf("the Cursor hook didn't record: n=%d", n)
+	}
+}
+
+// QA-SITE-3, through the binary: a stored input_hash can't confirm the password stripped from
+// the command; it is the hash of the stored, redacted action.
+func TestInputHashOfARedactedCommand(t *testing.T) {
+	home, dir := sigdekHome(t), repoDir(t)
+	if r := runHook(t, home, []string{"claude-code"}, cc(dir, "PostToolUse", `,"tool_name":"Bash","tool_input":{"command":"mysql -u root -phunter2 -h db.internal"}`)); r.code != 0 || r.out != "" {
+		t.Fatalf("%+v", r)
+	}
+	var lines []string
+	store.New(home).ReadFrom(store.Cursor{}, func(l store.Line) bool { lines = append(lines, string(l.Raw)); return true })
+	if len(lines) != 1 {
+		t.Fatalf("records: %v", lines)
+	}
+	var rec struct {
+		Action struct {
+			InputHash string `json:"input_hash"`
+		} `json:"action"`
+		Redactions int `json:"redactions"`
+	}
+	json.Unmarshal([]byte(lines[0]), &rec)
+	// sha256 of {"command":"mysql -u root -phunter2 -h db.internal"}, the raw input, was stored before.
+	const raw = "8ec4241b5984624f06ac61c7229096e452a1d18f3ea386251e7e9a2cd303cb62"
+	// sha256 of {"command":"mysql -u root -p[redacted] -h db.internal","kind":"shell","name":"Bash"}
+	const redacted = "7745210b0b4768c2aeded97f68ebc360469779291ca9ec4288e0134c0afd9b21"
+	if strings.Contains(lines[0], "hunter2") || rec.Redactions != 1 || rec.Action.InputHash != redacted || rec.Action.InputHash == raw {
+		t.Fatalf("record: %s", lines[0])
 	}
 }
 

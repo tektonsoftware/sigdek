@@ -45,7 +45,7 @@
           "required": ["server", "tool"],
           "properties": { "server": { "type": "string", "maxLength": 128 }, "tool": { "type": "string", "maxLength": 128 } }
         },
-        "input_hash": { "$ref": "#/$defs/sha256", "description": "Hash of the full tool input; the input itself is never stored." }
+        "input_hash": { "$ref": "#/$defs/sha256", "description": "SHA-256 hex of the tool input; the input itself is never stored. When the record's `redactions` is 0, it is the hash of the tool input exactly as the agent sent it (its JSON bytes, surrounding whitespace trimmed; `null` when there was none). That covers parts not stored, such as a file's contents, so it can confirm a guess at the whole input. When `redactions` is above 0, a secret was stripped from the command, path or URL, and it is instead the hash of the stored, redacted action, so it can't confirm a guess at the secret: the SHA-256 of the RFC 8785 canonical JSON of an object holding this action's `kind` and `name`, and its `command`, `path` and `url` where present, and nothing else. For example, {\"command\":\"mysql -u root -p[redacted] -h db.internal\",\"kind\":\"shell\",\"name\":\"Bash\"}. Anyone holding the record can recompute it." }
       }
     },
     "outcome": { "enum": ["ran", "failed", "denied_by_rule", "denied", "attempted"], "description": "What happened to the action: it ran, failed, was stopped by a Block rule (denied_by_rule) or was refused by the agent tool or its user (denied). attempted: recorded before the action ran because it changes SigDek's own setup; whether it then ran isn't known (a later record for the same call, when there is one, says)." },
@@ -71,7 +71,7 @@
       "properties": { "source": { "type": ["string", "null"], "maxLength": 64 }, "path": { "type": ["string", "null"], "maxLength": 1024 } },
       "description": "config_change only: which settings changed."
     },
-    "redactions": { "type": "integer", "minimum": 0, "description": "How many secret values were stripped from this record." }
+    "redactions": { "type": "integer", "minimum": 0, "description": "How many secret values were stripped from this record. On an action record, a count above 0 also means `action.input_hash` is the hash of the stored, redacted action, not of the tool input as sent (see `input_hash`)." }
   },
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }

@@ -22,6 +22,10 @@ func ClaudeCode(raw []byte, ctx Context) Result {
 	if err != nil {
 		return Result{Drop: err.Error()}
 	}
+	if fromCursor(p) {
+		// Before anything else, so no path records it: not a denial, not an attempted setup change.
+		return Result{StandAside: true}
+	}
 	cwd := p.str("cwd")
 	rec := func(evt string) *event.Record {
 		r := newRecord(ctx, "claude-code", nil, p.str("session_id"), event.Str(p.str("prompt_id")), cwd, evt)
@@ -67,7 +71,7 @@ func ClaudeCode(raw []byte, ctx Context) Result {
 		if deny == nil {
 			return preRecord(r, setup)
 		}
-		blocked(r, view, deny)
+		blocked(r, view, deny, toolInput)
 		out, _ := json.Marshal(map[string]any{"hookSpecificOutput": map[string]any{
 			"hookEventName":            "PreToolUse",
 			"permissionDecision":       "deny",
@@ -112,6 +116,25 @@ func ClaudeCode(raw []byte, ctx Context) Result {
 	default:
 		return Result{Drop: fmt.Sprintf("Claude Code event %q is not one SigDek records", name)}
 	}
+}
+
+// fromCursor reports whether input sent to SigDek's Claude Code hook came from Cursor, which
+// runs Claude Code's hooks as well as its own: its Third-Party Imports setting, on by default,
+// loads hooks from .claude/settings.local.json, .claude/settings.json and
+// ~/.claude/settings.json, so in a repository set up with `sigdek init` every Cursor action
+// reaches both of SigDek's hooks. The Cursor hook records it; this one stands aside, so it is
+// recorded once and as Cursor. Every Cursor hook input carries cursor_version,
+// conversation_id and generation_id, and Claude Code's carries none of them, so the test is
+// a top-level cursor_version field, or conversation_id and generation_id together. It reads
+// only the input, never the environment: Claude Code run in Cursor's terminal inherits
+// CURSOR_VERSION and CURSOR_PROJECT_DIR, and must still be recorded.
+func fromCursor(p hookInput) bool {
+	if _, ok := p["cursor_version"]; ok {
+		return true
+	}
+	_, conversation := p["conversation_id"]
+	_, generation := p["generation_id"]
+	return conversation && generation
 }
 
 func claudeCodeAction(name string, rawInput json.RawMessage) actionFields {
