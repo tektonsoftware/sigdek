@@ -152,6 +152,34 @@ func TestHookDenyAndCursorAnswers(t *testing.T) {
 	}
 }
 
+// QA-SITE-3, through the binary: a stored input_hash can't confirm the password stripped from
+// the command; it is the hash of the stored, redacted action.
+func TestInputHashOfARedactedCommand(t *testing.T) {
+	home, dir := sigdekHome(t), repoDir(t)
+	if r := runHook(t, home, []string{"claude-code"}, cc(dir, "PostToolUse", `,"tool_name":"Bash","tool_input":{"command":"mysql -u root -phunter2 -h db.internal"}`)); r.code != 0 || r.out != "" {
+		t.Fatalf("%+v", r)
+	}
+	var lines []string
+	store.New(home).ReadFrom(store.Cursor{}, func(l store.Line) bool { lines = append(lines, string(l.Raw)); return true })
+	if len(lines) != 1 {
+		t.Fatalf("records: %v", lines)
+	}
+	var rec struct {
+		Action struct {
+			InputHash string `json:"input_hash"`
+		} `json:"action"`
+		Redactions int `json:"redactions"`
+	}
+	json.Unmarshal([]byte(lines[0]), &rec)
+	// sha256 of {"command":"mysql -u root -phunter2 -h db.internal"}, the raw input, was stored before.
+	const raw = "8ec4241b5984624f06ac61c7229096e452a1d18f3ea386251e7e9a2cd303cb62"
+	// sha256 of {"command":"mysql -u root -p[redacted] -h db.internal","kind":"shell","name":"Bash"}
+	const redacted = "7745210b0b4768c2aeded97f68ebc360469779291ca9ec4288e0134c0afd9b21"
+	if strings.Contains(lines[0], "hunter2") || rec.Redactions != 1 || rec.Action.InputHash != redacted || rec.Action.InputHash == raw {
+		t.Fatalf("record: %s", lines[0])
+	}
+}
+
 func TestHookLatencyBudget(t *testing.T) {
 	home, dir := sigdekHome(t), repoDir(t)
 	in := cc(dir, "PostToolUse", `,"tool_name":"Bash","tool_input":{"command":"npm test"},"tool_response":{"stdout":"ok"},"duration_ms":100`)

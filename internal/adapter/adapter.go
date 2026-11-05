@@ -88,9 +88,10 @@ func actionView(f actionFields, cwd string) *event.Action {
 }
 
 // storedAction is the action as recorded: cut to the schema's limits first and redacted after,
-// which keeps redaction fast however long the input; the full input is kept only as a hash.
+// which keeps redaction fast however long the input; the full input is kept only as a hash
+// (actionInputHash).
 func storedAction(f actionFields, view *event.Action, rawInput json.RawMessage) (stored *event.Action, redactions int) {
-	stored = &event.Action{Kind: f.Kind, Name: event.Clean(f.Name, event.MaxActionName), InputHash: inputHash(rawInput)}
+	stored = &event.Action{Kind: f.Kind, Name: event.Clean(f.Name, event.MaxActionName)}
 	if f.Command != "" {
 		c, n := storeText(f.Command, event.MaxCommand)
 		stored.Command, redactions = c, redactions+n
@@ -106,6 +107,7 @@ func storedAction(f actionFields, view *event.Action, rawInput json.RawMessage) 
 	if f.MCP != nil {
 		stored.MCP = &event.MCP{Server: event.Clean(f.MCP.Server, event.MaxMCPName), Tool: event.Clean(f.MCP.Tool, event.MaxMCPName)}
 	}
+	stored.InputHash = actionInputHash(stored, redactions, rawInput)
 	return stored, redactions
 }
 
@@ -155,6 +157,17 @@ func commas(n int) string {
 	return s
 }
 
+// actionInputHash is a stored action's input_hash. With nothing stripped from the action, it is
+// the SHA-256 of the tool input exactly as the agent sent it. With a secret stripped
+// (redactions > 0), that hash would let a guess at the secret be confirmed, so it is the hash of
+// the stored, redacted action instead (event.RedactedInputHash). Only the one used is computed.
+func actionInputHash(a *event.Action, redactions int, raw json.RawMessage) string {
+	if redactions > 0 {
+		return event.RedactedInputHash(a)
+	}
+	return inputHash(raw)
+}
+
 func inputHash(raw json.RawMessage) string {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
@@ -196,13 +209,15 @@ func preRecord(r *event.Record, setup *rules.Rule) Result {
 }
 
 // blocked marks a record as stopped by a Block rule. A command too long for the record keeps
-// its first part and, in the note at the end, the part the rule matched.
-func blocked(r *event.Record, view *event.Action, deny *rules.Rule) {
+// its first part and, in the note at the end, the part the rule matched; its input_hash is
+// then worked out again, since a redacted action's hash covers the stored command.
+func blocked(r *event.Record, view *event.Action, deny *rules.Rule, rawInput json.RawMessage) {
 	r.Outcome, r.Rule = "denied_by_rule", deny.ID
 	if len(view.Command) > event.MaxCommand {
 		if m := rules.Excerpt(deny, view, event.MaxCommand/2); m != "" {
 			// Only shell actions have a command, and no path or URL, so its count is the record's.
 			r.Action.Command, r.Redactions = blockedText(view.Command, m, event.MaxCommand)
+			r.Action.InputHash = actionInputHash(r.Action, r.Redactions, rawInput)
 		}
 	}
 }

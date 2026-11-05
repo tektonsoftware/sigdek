@@ -183,3 +183,33 @@ func TestSealCapsEveryFieldToTheSchema(t *testing.T) {
 		t.Fatalf("sealed hash doesn't cover the capped record: %v", err)
 	}
 }
+
+// QA-SITE-3: the redacted-form input_hash is exactly the SHA-256 of the RFC 8785 canonical
+// JSON of the stored kind, name, command, path and url (those the action has), and of nothing
+// else. The expected values were computed outside Go, with shasum.
+func TestRedactedInputHash(t *testing.T) {
+	cases := []struct {
+		a    Action
+		want string
+	}{
+		// {"command":"mysql -u root -p[redacted] -h db.internal","kind":"shell","name":"Bash"}
+		{Action{Kind: "shell", Name: "Bash", Command: "mysql -u root -p[redacted] -h db.internal", InputHash: strings.Repeat("b", 64)},
+			"7745210b0b4768c2aeded97f68ebc360469779291ca9ec4288e0134c0afd9b21"},
+		// {"kind":"web","name":"WebFetch","url":"https://example.com/x?api_key=[redacted]"}
+		{Action{Kind: "web", Name: "WebFetch", URL: "https://example.com/x?api_key=[redacted]", MCP: &MCP{Server: "s", Tool: "t"}},
+			"a86b5a5929ba4bf2a8e756f772a59806a585c03b33f6e5627c5645f8a9efa5b9"},
+	}
+	for _, c := range cases {
+		if got := RedactedInputHash(&c.a); got != c.want {
+			t.Errorf("%+v: got %s, want %s", c.a, got, c.want)
+		}
+	}
+	// The input_hash field itself, and mcp, are not part of it.
+	a := Action{Kind: "file_read", Name: "Read", Path: "keys/[redacted]"}
+	b := a
+	b.InputHash, b.MCP = strings.Repeat("c", 64), &MCP{Server: "x", Tool: "y"}
+	canon := `{"kind":"file_read","name":"Read","path":"keys/[redacted]"}`
+	if RedactedInputHash(&a) != RedactedInputHash(&b) || RedactedInputHash(&a) != SHA256Hex([]byte(canon)) {
+		t.Fatalf("hash covers more than kind, name, command, path and url")
+	}
+}

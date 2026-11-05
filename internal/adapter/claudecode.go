@@ -67,7 +67,7 @@ func ClaudeCode(raw []byte, ctx Context) Result {
 		if deny == nil {
 			return preRecord(r, setup)
 		}
-		blocked(r, view, deny)
+		blocked(r, view, deny, toolInput)
 		out, _ := json.Marshal(map[string]any{"hookSpecificOutput": map[string]any{
 			"hookEventName":            "PreToolUse",
 			"permissionDecision":       "deny",

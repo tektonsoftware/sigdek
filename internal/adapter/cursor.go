@@ -109,7 +109,7 @@ func Cursor(raw []byte, ctx Context, hint string) Result {
 			res.Stdout = ok
 			return res
 		}
-		blocked(r, view, deny)
+		blocked(r, view, deny, toolInput)
 		msg := denyMessage(deny)
 		out, _ := json.Marshal(map[string]string{"permission": "deny", "user_message": msg, "agent_message": msg})
 		return Result{Record: r, Stdout: append(out, '\n')}

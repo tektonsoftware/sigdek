@@ -521,4 +521,116 @@ func TestCutFieldsAreMarked(t *testing.T) {
 	if d.Record.Rule != "no-rm" || len(got) > event.MaxCommand || !strings.Contains(got, "the rule matched: rm /srv/data -rf") || strings.Contains(string(line), "ghp_") {
 		t.Fatalf("blocked command: %d bytes: %q", len(got), got[len(got)-200:])
 	}
+	// The secret was past the cut, so nothing was stripped and input_hash is the raw input's.
+	if d.Record.Redactions != 0 || d.Record.Action.InputHash != event.SHA256Hex([]byte(`{"command":`+strconvQuote(padded)+`}`)) {
+		t.Fatalf("blocked command's input_hash: redactions %d, %s", d.Record.Redactions, d.Record.Action.InputHash)
+	}
+	// With the secret inside the part kept, the blocked command's stored form is redacted and
+	// replaced after the record was built, and input_hash follows it.
+	secretFirst := "GH=ghp_" + strings.Repeat("Ab3", 12) + " rm /srv/data" + strings.Repeat(" ", 70000) + "-rf /srv/other"
+	d = ClaudeCode(payload(dir, "PreToolUse", map[string]any{"tool_name": "Bash", "tool_input": map[string]any{"command": secretFirst}}), x)
+	line = sealed(t, d.Record)
+	if d.Record.Rule != "no-rm" || d.Record.Redactions < 1 || strings.Contains(string(line), "ghp_") || !strings.Contains(d.Record.Action.Command, "the rule matched:") {
+		t.Fatalf("blocked command with a secret: %+v", d.Record.Action)
+	}
+	if d.Record.Action.InputHash != event.RedactedInputHash(d.Record.Action) {
+		t.Fatalf("blocked command's input_hash doesn't cover its stored form: %s", d.Record.Action.InputHash)
+	}
+}
+
+// reread parses a sealed record line the way a reader of the log or an upload would.
+func reread(t *testing.T, line []byte) event.Record {
+	t.Helper()
+	var r event.Record
+	if err := json.Unmarshal(line, &r); err != nil || r.Action == nil {
+		t.Fatalf("record line: %v: %s", err, line)
+	}
+	return r
+}
+
+// QA-SITE-3: when a secret is stripped from an action, input_hash is the hash of the stored,
+// redacted action, so it can't confirm a guessed password the way the hash of the raw input
+// could. A record says which kind it holds: redactions above 0 means the redacted form.
+func TestInputHashNeverCoversAStrippedSecret(t *testing.T) {
+	dir := repo(t)
+	const cmd = "mysql -u root -phunter2 -h db.internal"
+	sum := func(s string) string { return event.SHA256Hex([]byte(s)) }
+	// Inputs holding the secret, as the agent might have sent them. None may match.
+	guesses := []string{
+		`{"command":"mysql -u root -phunter2 -h db.internal"}`,
+		`{"command":"mysql -u root -phunter2 -h db.internal","description":"Connect to the database"}`,
+		`{"command":"mysql -u root -phunter2 -h db.internal","kind":"shell","name":"Bash"}`,
+		`{"command":"mysql -u root -phunter2 -h db.internal","kind":"shell","name":"Shell"}`,
+		cmd,
+	}
+	block := ctx()
+	block.Rules.Rules = append(block.Rules.Rules, rules.Rule{ID: "no-db", Effect: rules.Deny, Kinds: []string{"shell"}, Command: "mysql*db.internal*"})
+	bash := map[string]any{"tool_name": "Bash", "tool_input": map[string]any{"command": cmd}}
+	shell := map[string]any{"tool_name": "Shell", "tool_input": map[string]any{"command": cmd}, "cwd": dir}
+	cases := []struct {
+		name string
+		res  Result
+		// The stored, redacted action's canonical JSON, hashed with shasum outside Go.
+		want string
+	}{
+		{"Claude Code PostToolUse", ClaudeCode(payload(dir, "PostToolUse", bash), ctx()), "7745210b0b4768c2aeded97f68ebc360469779291ca9ec4288e0134c0afd9b21"},
+		{"Claude Code blocked", ClaudeCode(payload(dir, "PreToolUse", bash), block), "7745210b0b4768c2aeded97f68ebc360469779291ca9ec4288e0134c0afd9b21"},
+		{"Cursor postToolUse", Cursor(cursorPayloadJSON(dir, "postToolUse", shell), ctx(), ""), "d49a841076864328a3586bafc2e6b3a51b5b80fffa41755133a70395d4b97fa2"},
+		{"Cursor blocked", Cursor(cursorPayloadJSON(dir, "preToolUse", shell), block, ""), "d49a841076864328a3586bafc2e6b3a51b5b80fffa41755133a70395d4b97fa2"},
+	}
+	for _, c := range cases {
+		line := sealed(t, c.res.Record)
+		r := reread(t, line)
+		if strings.Contains(string(line), "hunter2") || r.Action.Command != "mysql -u root -p[redacted] -h db.internal" || r.Redactions != 1 {
+			t.Fatalf("%s: not redacted as expected: %s", c.name, line)
+		}
+		if r.Action.InputHash != c.want {
+			t.Errorf("%s: input_hash %s, want the hash of the redacted action %s", c.name, r.Action.InputHash, c.want)
+		}
+		// A reader recomputes it from the record alone.
+		if event.RedactedInputHash(r.Action) != r.Action.InputHash {
+			t.Errorf("%s: input_hash can't be recomputed from the record", c.name)
+		}
+		for _, g := range guesses {
+			if r.Action.InputHash == sum(g) {
+				t.Errorf("%s: input_hash confirms the secret: it equals sha256(%s)", c.name, g)
+			}
+		}
+	}
+
+	// Credentials in a URL: the hash covers the cleaned URL.
+	web := ClaudeCode(payload(dir, "PostToolUse", map[string]any{"tool_name": "WebFetch", "tool_input": map[string]any{"url": "https://dev:s3cretpass@example.com/x?api_key=abc123abc", "prompt": "p"}}), ctx())
+	r := reread(t, sealed(t, web.Record))
+	if r.Redactions < 1 || r.Action.InputHash != event.RedactedInputHash(r.Action) || strings.Contains(r.Action.URL, "s3cretpass") || strings.Contains(r.Action.URL, "abc123abc") {
+		t.Fatalf("web: %+v redactions %d", r.Action, r.Redactions)
+	}
+	// So does a setup change recorded as attempted before it runs.
+	setup := ClaudeCode(payload(dir, "PreToolUse", map[string]any{"tool_name": "Bash", "tool_input": map[string]any{"command": "PGPASSWORD=hunter2hunter2 sigdek logout"}}), ctx())
+	r = reread(t, sealed(t, setup.Record))
+	if r.Outcome != "attempted" || r.Redactions < 1 || r.Action.InputHash != event.RedactedInputHash(r.Action) || strings.Contains(r.Action.Command, "hunter2hunter2") {
+		t.Fatalf("attempted setup change: %+v redactions %d", r.Action, r.Redactions)
+	}
+}
+
+// QA-SITE-3: with nothing stripped, input_hash is still the SHA-256 of the tool input exactly
+// as the agent sent it, byte for byte, as before the change.
+func TestInputHashWithoutASecretIsUnchanged(t *testing.T) {
+	dir := repo(t)
+	// Spacing and key order as sent, which the hash keeps.
+	input := `{ "command": "npm test",  "description": "Run the tests" }`
+	raw := []byte(`{"session_id":"s","cwd":` + strconvQuote(dir) + `,"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":` + input + `}`)
+	r := reread(t, sealed(t, ClaudeCode(raw, ctx()).Record))
+	if r.Redactions != 0 || r.Action.InputHash != event.SHA256Hex([]byte(input)) {
+		t.Fatalf("input_hash %s, want sha256 of the input as sent", r.Action.InputHash)
+	}
+	cur := Cursor(cursorPayloadJSON(dir, "postToolUse", map[string]any{"tool_name": "Shell", "tool_input": map[string]any{"command": "npm test"}, "cwd": dir}), ctx(), "")
+	// {"command":"npm test"}, hashed with shasum outside Go.
+	if r := reread(t, sealed(t, cur.Record)); r.Redactions != 0 || r.Action.InputHash != "9178ac939ad908d8fd89e97596cdc0e5e28dee903ccb18dc79d0fb98698cbd14" {
+		t.Fatalf("Cursor input_hash %s", r.Action.InputHash)
+	}
+	// An MCP call has no command, path or URL, so nothing is stripped and the raw hash stays.
+	mcp := ClaudeCode(payload(dir, "PostToolUse", map[string]any{"tool_name": "mcp__github__create_issue", "tool_input": map[string]any{"title": "x"}}), ctx())
+	if r := reread(t, sealed(t, mcp.Record)); r.Redactions != 0 || r.Action.InputHash != event.SHA256Hex([]byte(`{"title":"x"}`)) {
+		t.Fatalf("MCP input_hash %s", r.Action.InputHash)
+	}
 }
