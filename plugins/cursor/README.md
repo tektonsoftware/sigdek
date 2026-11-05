@@ -6,7 +6,7 @@ The plugin is free and open source (Apache-2.0) and works on its own, keeping re
 
 ## Use it
 
-1. Install the plugin. It's submitted to the Cursor Marketplace and isn't listed there yet. Until it is, an admin on Cursor's Teams or Enterprise plans can add it to a team marketplace with Import from Repo and github.com/tektonsoftware/sigdek, or a repository can be set up with `sigdek init`, which records Cursor without the plugin.
+1. Install the plugin. It isn't listed on the Cursor Marketplace yet. Until it is, an admin on Cursor's Teams or Enterprise plans can add it to a team marketplace with Import from Repo and github.com/tektonsoftware/sigdek, or a repository can be set up with `sigdek init`, which records Cursor without the plugin.
 2. Use Cursor's agent as usual. Each action is recorded once it has run, failed or been refused. Cursor documents no hook after you decline an action at its approval prompt, so a declined action may leave no record.
 3. Install the `sigdek` command (https://sigdek.com/docs/#command). Read this machine's records with `sigdek log`, and check that none was changed with `sigdek verify`.
 4. To connect the machine to your team, run `sigdek login` and approve it in your browser.

@@ -22,7 +22,7 @@ git add .claude .cursor .sigdek && git commit -m "Record agent activity with Sig
 /plugin install sigdek@sigdek
 ```
 
-**As a Cursor plugin**: it's submitted to the Cursor Marketplace, where Cursor reviews each plugin by hand, and isn't listed yet. Until it is, set up each repository with `sigdek init` (above), or, on Cursor's Teams and Enterprise plans, add it to a team marketplace with **Import from Repo** and `https://github.com/tektonsoftware/sigdek`, which lists the plugin in `.cursor-plugin/marketplace.json`.
+**As a Cursor plugin**: it isn't listed on the Cursor Marketplace yet (Cursor reviews each plugin by hand). Until it is, set up each repository with `sigdek init` (above), or, on Cursor's Teams and Enterprise plans, add it to a team marketplace with **Import from Repo** and `https://github.com/tektonsoftware/sigdek`, which lists the plugin in `.cursor-plugin/marketplace.json`.
 
 Then connect the machine to your team: `npx sigdek login`. Until you do, records stay on the machine.
 
