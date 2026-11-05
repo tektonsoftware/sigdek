@@ -7,5 +7,7 @@
   "homepage": "https://sigdek.com",
   "repository": "https://github.com/tektonsoftware/sigdek",
   "license": "Apache-2.0",
+  "keywords": ["audit", "compliance", "soc2", "evidence", "security", "hooks"],
+  "logo": "assets/logo.png",
   "hooks": "./hooks/hooks.json"
 }

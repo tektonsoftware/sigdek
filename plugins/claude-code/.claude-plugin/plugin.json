@@ -3,9 +3,14 @@
   "displayName": "SigDek",
   "version": "0.0.0",
   "description": "Records what Claude Code's agents do in your repositories (who, which tool, what ran or was blocked) for your team's audit evidence. Never records prompt text, file contents or command output.",
-  "author": { "name": "Tekton Software LLC", "email": "hello@sigdek.com" },
+  "author": { "name": "Tekton Software LLC", "email": "hello@sigdek.com", "url": "https://sigdek.com" },
   "homepage": "https://sigdek.com",
   "repository": "https://github.com/tektonsoftware/sigdek",
   "license": "Apache-2.0",
-  "keywords": ["audit", "compliance", "soc2", "evidence", "security"]
+  "keywords": ["audit", "compliance", "soc2", "evidence", "security", "hooks"],
+  "icon": "./assets/icon.png",
+  "documentationUrl": "https://sigdek.com/docs/",
+  "supportUrl": "https://sigdek.com/docs/#troubleshooting",
+  "privacyPolicyUrl": "https://sigdek.com/privacy/",
+  "termsOfServiceUrl": "https://sigdek.com/terms/"
 }
