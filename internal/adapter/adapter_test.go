@@ -634,3 +634,68 @@ func TestInputHashWithoutASecretIsUnchanged(t *testing.T) {
 		t.Fatalf("MCP input_hash %s", r.Action.InputHash)
 	}
 }
+
+// Cursor runs Claude Code's hooks too (Third-Party Imports, on by default). Input from Cursor
+// to the Claude Code hook writes nothing, prints nothing and logs nothing, on every path:
+// a Block rule match, a setup change that would be recorded as attempted, an unknown event.
+func TestClaudeCodeHookStandsAsideForCursor(t *testing.T) {
+	dir := repo(t)
+	c := ctx()
+	c.Rules.Rules = append(c.Rules.Rules, rules.Rule{ID: "no-rm", Effect: rules.Deny, Kinds: []string{"shell"}, Command: "rm -rf*"})
+	var inputs [][]byte
+	for _, ev := range append(append([]string{}, CursorEvents...), ClaudeCodeEvents...) {
+		for _, cmd := range []string{"rm -rf /srv/data", "rm -rf .sigdek", "npm run migrate -- --env=production", "ls"} {
+			for _, tool := range []string{"Shell", "Bash"} {
+				// As Cursor sends its own hooks, and as it might if it translated names to Claude Code's.
+				inputs = append(inputs, cursorPayloadJSON(dir, ev, map[string]any{"tool_name": tool, "tool_input": map[string]any{"command": cmd}, "cwd": dir}))
+			}
+		}
+	}
+	inputs = append(inputs,
+		// Cursor's sessionStart also carries session_id, the same as conversation_id.
+		cursorPayloadJSON(dir, "sessionStart", map[string]any{"session_id": "conv-1"}),
+		// Only cursor_version, even null; or only conversation_id and generation_id.
+		[]byte(`{"cursor_version":null,"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf .sigdek"}}`),
+		[]byte(`{"conversation_id":"c","generation_id":"g","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /srv/data"}}`),
+		[]byte(`{"cursor_version":"2.4.0","hook_event_name":"workspaceOpen"}`),
+	)
+	for _, in := range inputs {
+		res := ClaudeCode(in, c)
+		if !res.StandAside || res.Record != nil || res.Stdout != nil || res.Flush || res.Urgent || res.Drop != "" {
+			t.Fatalf("%s: %+v", in, res)
+		}
+	}
+	// A cut-off Cursor input stands aside too, when the field arrived.
+	p := c
+	p.Partial = true
+	cut := `{"cursor_version":"2.4.0","conversation_id":"c","hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"rm -rf /srv/data ` + strings.Repeat("y", 100)
+	if res := ClaudeCode([]byte(cut), p); !res.StandAside || res.Record != nil || res.Stdout != nil {
+		t.Fatalf("cut-off Cursor input: %+v", res)
+	}
+}
+
+// Claude Code's own input never stands aside: it has none of Cursor's fields, and the
+// environment (Cursor's terminal sets CURSOR_VERSION) plays no part.
+func TestClaudeCodeInputIsNeverMistakenForCursor(t *testing.T) {
+	dir := repo(t)
+	c := ctx()
+	c.Rules.Rules = append(c.Rules.Rules, rules.Rule{ID: "no-rm", Effect: rules.Deny, Kinds: []string{"shell"}, Command: "rm -rf*"})
+	// Values that mention Cursor, nested or in strings, are not Cursor's fields.
+	in := map[string]any{"tool_name": "Bash", "tool_input": map[string]any{"command": "rm -rf /srv/data", "cursor_version": "2.4.0", "conversation_id": "c", "generation_id": "g"}, "model": "cursor_version"}
+	if res := ClaudeCode(payload(dir, "PreToolUse", in), c); res.StandAside || res.Record == nil || res.Record.Outcome != "denied_by_rule" || res.Stdout == nil {
+		t.Fatalf("Claude Code deny: %+v", res)
+	}
+	for _, ev := range ClaudeCodeEvents {
+		res := ClaudeCode(payload(dir, ev, map[string]any{"tool_name": "Bash", "tool_input": map[string]any{"command": "ls"}, "prompt": "x"}), ctx())
+		if res.StandAside {
+			t.Fatalf("%s stood aside for Claude Code", ev)
+		}
+	}
+	// One of conversation_id and generation_id alone, at the top level, isn't enough.
+	for _, field := range []string{"conversation_id", "generation_id"} {
+		in := map[string]any{"tool_name": "Bash", "tool_input": map[string]any{"command": "ls"}, field: "x"}
+		if res := ClaudeCode(payload(dir, "PostToolUse", in), ctx()); res.StandAside || res.Record == nil {
+			t.Fatalf("%s alone: %+v", field, res)
+		}
+	}
+}

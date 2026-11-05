@@ -91,6 +91,9 @@ func Run(tool, hint string, in io.Reader, out io.Writer, o Options) {
 		LogError(o.Home, fmt.Errorf("unknown agent tool %q; nothing recorded", tool))
 		return
 	}
+	if res.StandAside {
+		return // Cursor's input to the Claude Code hook; only the Cursor hook records Cursor. By design, so not logged.
+	}
 	if res.Drop != "" {
 		LogError(o.Home, fmt.Errorf("%s hook: %s; nothing recorded", tool, res.Drop))
 	}

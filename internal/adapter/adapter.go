@@ -31,13 +31,16 @@ type Context struct {
 
 // Result is what the hook does: print Stdout, write Record (unsealed; nil for none), and
 // start a background upload when Flush is set, or upload before returning when Urgent is set.
-// Drop, when set, says why an event that arrived wrote nothing, for the error log.
+// Drop, when set, says why an event that arrived wrote nothing, for the error log. StandAside
+// says the event isn't this hook's to handle (Cursor running SigDek's Claude Code hook): the
+// hook then prints, writes, logs and uploads nothing.
 type Result struct {
-	Record *event.Record
-	Stdout []byte
-	Flush  bool
-	Urgent bool
-	Drop   string
+	Record     *event.Record
+	Stdout     []byte
+	Flush      bool
+	Urgent     bool
+	Drop       string
+	StandAside bool
 }
 
 func newRecord(ctx Context, tool string, toolVersion *string, session string, promptID *string, cwd, evt string) *event.Record {
