@@ -1,0 +1,98 @@
+name: release
+
+# Push a tag like v0.3.0 to publish binaries for every platform, then pin the plugins to them.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+  id-token: write # npm provenance
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test ./...
+      - name: Build
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          mkdir -p dist
+          for t in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+            os=${t%/*} arch=${t#*/} ext=""
+            [ "$os" = windows ] && ext=".exe"
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -buildvcs=false \
+              -ldflags "-s -w -X main.version=$version" \
+              -o "dist/sigdek_${version}_${os}_${arch}${ext}" ./cmd/sigdek
+          done
+          cd dist && sha256sum sigdek_* > checksums.txt && cat checksums.txt
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "SigDek recorder $GITHUB_REF_NAME" \
+            --notes "Binaries for macOS, Linux and Windows on x64 and arm64. Check them against checksums.txt, or let the launcher do it."
+      - name: Build the npm packages
+        run: node scripts/npm-packages.mjs "${GITHUB_REF_NAME#v}" dist npm-out
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Publish to npm
+        env:
+          # The first release uses a token (NPM_TOKEN). After that, each package trusts this
+          # workflow directly (npm trusted publishing, OIDC), and the token can be deleted.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          npm install -g npm@11.21.0 # trusted publishing needs npm 11.5.1 or later
+          # Provenance links each package to this build; npm only allows it from a public repository.
+          flags="--access public"
+          [ "$PRIVATE" = "true" ] || flags="$flags --provenance"
+          [ -n "$NODE_AUTH_TOKEN" ] || echo "No NPM_TOKEN: publishing through trusted publishing."
+          # Platform packages first, so the launcher never points at a version that isn't there.
+          for d in npm-out/sigdek-*; do (cd "$d" && npm publish $flags); done
+          (cd npm-out/sigdek && npm publish $flags)
+      - name: Pin the plugins to this release
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          git fetch origin main && git checkout main
+          scripts/sync-plugins.sh "$version" dist/checksums.txt
+          node scripts/package-managers.mjs "$version" dist/checksums.txt dist/winget
+          git config user.name "sigdek-release"
+          git config user.email "hello@sigdek.com"
+          git add plugins/ Formula/ bucket/
+          git commit -m "release: pin plugins, Homebrew and Scoop to v$version"
+          git push origin main
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winget-manifests
+          path: dist/winget
+
+  # winget installs come from Microsoft's community repository: each release opens a pull
+  # request there, which Microsoft's checks and moderators approve (usually within days).
+  winget:
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: winget-manifests
+          path: winget
+      - name: Submit to microsoft/winget-pkgs
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if (-not $env:WINGET_TOKEN) { Write-Output "::notice::WINGET_TOKEN isn't set; the manifests are attached to this run for a manual submission."; exit 0 }
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          $dir = Get-ChildItem -Directory -Recurse winget/manifests | Where-Object { $_.Name -match '^\d' } | Select-Object -First 1
+          .\wingetcreate.exe submit --token $env:WINGET_TOKEN --prtitle "New version: TektonSoftware.SigDek $($dir.Name)" $dir.FullName

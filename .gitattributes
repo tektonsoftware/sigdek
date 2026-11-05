@@ -1,0 +1,5 @@
+# LF everywhere: test fixtures, generated files and hashes compare bytes.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.pdf binary

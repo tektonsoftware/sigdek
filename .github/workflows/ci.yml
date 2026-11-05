@@ -1,0 +1,67 @@
+name: ci
+
+# Linux on every push; macOS and Windows (billed at 10x and 2x minutes on private repos)
+# on pull requests and on demand.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -race ./... 2>&1 | tee test-output.txt || {
+            # Surface failures as annotations, which stay readable without downloading logs.
+            { grep -E -- "--- FAIL|^FAIL|\.go:[0-9]+|panic:|exit status|build failed|setup failed" test-output.txt || tail -n 15 test-output.txt; } | head -30 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          }
+      - name: Hook latency budget (p95 under 50 ms; 120 ms on Windows)
+        run: go test -run TestHookLatencyBudget -v ./cmd/sigdek/
+
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Formatting
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: No third-party Go modules
+        run: test ! -f go.sum || (echo "The recorder uses only the standard library; go.sum should not exist." && exit 1)
+      - name: Plugin launchers match the template
+        run: |
+          scripts/sync-plugins.sh
+          git diff --exit-code plugins/
+      - name: Cross-compile every release target
+        run: |
+          for t in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+            GOOS=${t%/*} GOARCH=${t#*/} CGO_ENABLED=0 go build -trimpath -o /dev/null ./cmd/sigdek
+          done
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Canonical JSON vectors are current
+        run: |
+          cd schema/testdata && node gen-vectors.mjs >/dev/null && git diff --exit-code canonical-vectors.json
+      - name: Validate the Claude Code plugin
+        run: npx -y @anthropic-ai/claude-code plugin validate --strict ./plugins/claude-code

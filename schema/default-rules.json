@@ -1,0 +1,114 @@
+{
+  "version": 0,
+  "rules": [
+    {
+      "id": "sigdek-setup",
+      "label": "SigDek's own setup changed",
+      "effect": "flag",
+      "kinds": [
+        "file_edit"
+      ],
+      "path": "re:(^|/)(\\.sigdek/.*|\\.claude/settings[^/]*\\.json|\\.cursor/hooks\\.json)$"
+    },
+    {
+      "id": "sigdek-setup-shell",
+      "label": "SigDek's own setup changed from the shell",
+      "effect": "flag",
+      "kinds": [
+        "shell"
+      ],
+      "command": "re:\\bSIGDEK_(BIN|HOME)\\s*=|\\b(export|unset|setx|set|readonly|declare|typeset|local)\\s+(-\\S+\\s+)*SIGDEK_(BIN|HOME)\\b|\\bsigdek(\\.exe)?\\s+(-\\S+\\s+)*(logout\\b|init\\b[^|;\u0026\\n]*\\s--remove\\b)|(\u003e|\\btee\\b|\\bsed\\s+-i|\\b(rm|mv|cp|ln|truncate|chmod|chown|unlink|shred|dd|rsync)\\b|\\bgit\\s[^|;\u0026\\n]*\\b(checkout|restore|stash|apply|reset|clean|update-index)\\b)(?:[^|;\u0026\\n'\"\\\\]|\\\\[\\s\\S]|'[^']*'|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\")*(?:'[^']*|\"(?:[^\"\\\\]|\\\\[\\s\\S])*)?(\\.sigdek\\b|\\.claude/settings[^/\\s]*\\.json|\\.cursor/hooks\\.json)|\\b(rm|rmdir|mv|unlink|shred|chmod|chown)\\b(?:[^|;\u0026\\n'\"\\\\]|\\\\[\\s\\S]|'[^']*'|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\")*(?:'[^']*|\"(?:[^\"\\\\]|\\\\[\\s\\S])*)?[\\s/'\"=(]\\.(claude/?|cursor/?|([sc][sigdeklaucro]*)?([*?]|\\[[^\\]\\s]*\\])([sigdeklaucro*?]|\\[[^\\]\\s]*\\])*)([\\s'\"|;\u0026\u003c\u003e()]|$)|\\b(python[0-9.]*|node|deno|bun|ruby|perl|php)\\b[^\\n]*((\\b(rm|unlink|remove|write|rename|replace|truncate|chmod|move|copy|dump)\\w*|\\s-[a-zA-Z]*i\\b|['\"][wa]b?\\+?['\"])[^\\n]*(\\.sigdek\\b|\\.claude/settings[^/\\s]*\\.json|\\.cursor/hooks\\.json)|(\\.sigdek\\b|\\.claude/settings[^/\\s]*\\.json|\\.cursor/hooks\\.json)[^\\n]*(\\b(rm|unlink|remove|write|rename|replace|truncate|chmod|move|copy|dump)\\w*|\\s-[a-zA-Z]*i\\b|['\"][wa]b?\\+?['\"]))|\\bfind\\b[^|;\u0026\\n]*((\\.sigdek\\b|\\.claude/settings[^/\\s]*\\.json|\\.cursor/hooks\\.json)|[\\s/'\"=(]\\.(claude/?|cursor/?|([sc][sigdeklaucro]*)?([*?]|\\[[^\\]\\s]*\\])([sigdeklaucro*?]|\\[[^\\]\\s]*\\])*)([\\s'\"|;\u0026\u003c\u003e()]|$))([^|;\u0026\\n]*\\s)?-(delete|exec)\\b|\\b(cd|pushd)\\s+(-\\S+\\s+)?[\"']?([^\\s'\"|;\u0026]*/)?\\.sigdek/?[\"']?(\\s[^;\u0026|\\n]*)?[;\u0026|\\n]([\\s\\S]*[;\u0026|\\n])?\\s*((sudo\\s+(-\\S+\\s+)*)?(rm|rmdir|unlink|shred|truncate|mv|cp|ln|chmod|chown|tee|dd|sed\\s+(-\\S+\\s+)*-i|git\\s[^|;\u0026\\n]*\\b(rm|mv|checkout|restore))\\b|[^;\u0026|\\n]*[^0-9\u0026\u003e]\u003e)|\\b(cd|pushd)\\s+(-\\S+\\s+)?[\"']?([^\\s'\"|;\u0026]*/)?\\.(claude|cursor)/?[\"']?(\\s[^;\u0026|\\n]*)?[;\u0026|\\n]([\\s\\S]*[;\u0026|\\n])?\\s*((sudo\\s+(-\\S+\\s+)*)?(rm|rmdir|unlink|shred|truncate|mv|cp|ln|chmod|chown|tee|dd|sed\\s+(-\\S+\\s+)*-i|git\\s[^|;\u0026\\n]*\\b(rm|mv|checkout|restore))\\b|[^;\u0026|\\n]*[^0-9\u0026\u003e]\u003e)(?:[^|;\u0026\\n'\"\\\\]|\\\\[\\s\\S]|'[^']*'|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\")*(?:'[^']*|\"(?:[^\"\\\\]|\\\\[\\s\\S])*)?\\b(settings[^/\\s]*|hooks)\\.json"
+    },
+    {
+      "id": "force-push",
+      "label": "Force push",
+      "effect": "flag",
+      "kinds": [
+        "shell"
+      ],
+      "command": "re:\\bgit\\s+(?:(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)(?:=|\\s+)(?:'[^']*'|\"[^\"]*\"|\\S+)\\s+|-{1,2}[a-zA-Z][\\w-]*(?:=\\S+)?\\s+)*push\\b[^|;\u0026\\n]*\\s(--force(-with-lease|-if-includes)?\\b|-[a-zA-Z]*f[a-zA-Z]*\\b|\\+\\S|--mirror\\b)"
+    },
+    {
+      "id": "infra-change",
+      "label": "Infrastructure change",
+      "effect": "flag",
+      "kinds": [
+        "shell"
+      ],
+      "command": "re:(\\b(terraform|tofu)\\s+(-\\S+\\s+)*(apply|destroy|import|state\\s+(rm|mv|push))\\b|\\bkubectl\\s+(?:-{1,2}[a-zA-Z][\\w-]*(?:=\\S+|\\s+[^-\\s]\\S*)?\\s+)*(apply|delete|replace|patch|scale|drain|create|edit|rollout\\s+undo)\\b|\\bhelm\\s+(?:-{1,2}[a-zA-Z][\\w-]*(?:=\\S+|\\s+[^-\\s]\\S*)?\\s+)*(install|upgrade|uninstall|rollback|delete)\\b|\\bpulumi\\s+(-\\S+\\s+)*(up|destroy)\\b|\\baws\\s+(?:-{1,2}[a-zA-Z][\\w-]*(?:=\\S+|\\s+[^-\\s]\\S*)?\\s+)*\\S+\\s+(?:-{1,2}[a-zA-Z][\\w-]*(?:=\\S+|\\s+[^-\\s]\\S*)?\\s+)*(delete|terminate|put|create|update|remove|modify)-[^\\s|;\u0026]*|\\baws\\s+(?:-{1,2}[a-zA-Z][\\w-]*(?:=\\S+|\\s+[^-\\s]\\S*)?\\s+)*s3\\s+(rm|rb)\\b|\\bgcloud\\s+[^|;\u0026\\n]*\\b(delete|deploy)\\b|\\baz\\s+[^|;\u0026\\n]*\\b(delete|create)\\b)([ \\t]+([^\\s|;\u0026\\-][^\\s|;\u0026]*|-(|[^\\s|;\u0026\\-h][^\\s|;\u0026]*|-(|[^\\s|;\u0026dh][^\\s|;\u0026]*|d(|[^\\s|;\u0026r][^\\s|;\u0026]*|r(|[^\\s|;\u0026y][^\\s|;\u0026]*|y(|[^\\s|;\u0026\\-][^\\s|;\u0026]*|-(|[^\\s|;\u0026r][^\\s|;\u0026]*|r(|[^\\s|;\u0026u][^\\s|;\u0026]*|u(|[^\\s|;\u0026n][^\\s|;\u0026]*|n([^\\s|;\u0026\\=][^\\s|;\u0026]*|=(|[^\\s|;\u0026cst][^\\s|;\u0026]*))))))))|h(|[^\\s|;\u0026e][^\\s|;\u0026]*|e(|[^\\s|;\u0026l][^\\s|;\u0026]*|l(|[^\\s|;\u0026p][^\\s|;\u0026]*|p([^\\s|;\u0026][^\\s|;\u0026]*)))))|h([^\\s|;\u0026][^\\s|;\u0026]*))))*[ \\t]*($|[|;\u0026\\n)])"
+    },
+    {
+      "id": "recursive-delete",
+      "label": "Recursive delete",
+      "effect": "flag",
+      "kinds": [
+        "shell"
+      ],
+      "command": "re:(((^|[;\u0026|(\\n`]|\\$\\()\\s*([A-Za-z_][A-Za-z0-9_]*=\\S*\\s+|(time|nohup|nice|exec|command|env)\\s+(-\\S+\\s+)*)*|\\s(-[a-zA-Z]*c|--|-exec|-execdir|-ok|-okdir)\\s+|\\b(sudo|doas|xargs|exec|eval|nohup|time|nice|ionice|timeout|watch|ssh|command|builtin|parallel|chroot|runuser|flock|then|do|else)\\b[^|;\u0026\\n]*\\s|\\b(docker|podman|nerdctl)\\b[^|;\u0026\\n]*\\brun\\b[^|;\u0026\\n]*\\s)(\\S*/)?|\\bgit\\s+(?:(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)(?:=|\\s+)(?:'[^']*'|\"[^\"]*\"|\\S+)\\s+|-{1,2}[a-zA-Z][\\w-]*(?:=\\S+)?\\s+)*)rm\\s+([^|;\u0026\\n]*\\s)?(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)\\b"
+    },
+    {
+      "id": "secrets-file",
+      "label": "Secrets file accessed",
+      "effect": "flag",
+      "kinds": [
+        "file_read",
+        "file_edit"
+      ],
+      "path": "re:(^|/)((?i:\\.env(\\.([^/.est][^/.]*|e(|[^/.x][^/.]*|x(|[^/.a][^/.]*|a(|[^/.m][^/.]*)))|s(|[^/.a][^/.]*|a(|[^/.m][^/.]*|m(|[^/.p][^/.]*)))|t(|[^/.e][^/.]*|e(|[^/.m][^/.]*|m(|[^/.p][^/.]*|p(|[^/.l][^/.]*))))))*|\\.envrc)|((?i:[^/]*([^/abcenst]|[^/c]a|[^/u]b|[^/p]ub|[^/i]c|[^/l]ic|[^/b]lic|[^/u]blic|[^/p]ublic|[^/lt]e|[^/d]le|[^/n]dle|[^/u]ndle|[^/b]undle|[^/a]te|[^/c]ate|[^/i]cate|[^/f]icate|[^/i]ficate|[^/t]ificate|[^/r]tificate|[^/e]rtificate|[^/c]ertificate|[^/i]n|[^/a]in|[^/h]ain|[^/c]hain|[^/et]s|[^/t]es|[^/a]tes|[^/c]ates|[^/i]cates|[^/f]icates|[^/i]ficates|[^/t]ificates|[^/r]tificates|[^/e]rtificates|[^/c]ertificates|[^/r]ts|[^/e]rts|[^/c]erts|[^/r]t|[^/ce]rt|[^/c]ert)|a|b|ub|c|ic|lic|blic|ublic|e|le|dle|ndle|undle|te|ate|cate|icate|ficate|ificate|tificate|rtificate|ertificate|n|in|ain|hain|s|es|tes|ates|cates|icates|ficates|ificates|tificates|rtificates|ertificates|ts|rts|erts|t|rt|ert))?\\.pem|[^/]*\\.key|id_(rsa|dsa|ecdsa|ed25519)|\\.npmrc|\\.netrc|\\.pgpass|\\.git-credentials|credentials(\\.json)?|secrets?\\.(ya?ml|json)|[^/]*\\.tfvars(\\.json)?|\\.kube/config|\\.sigdek/device\\.json)$"
+    },
+    {
+      "id": "secrets-file-shell",
+      "label": "Secrets file read from the shell",
+      "effect": "flag",
+      "kinds": [
+        "shell"
+      ],
+      "command": "re:(\\b(cat|less|more|head|tail|bat|cp|scp|base64|xxd|od|hexdump|strings|source|grep|egrep|fgrep|rg|ag|awk|gawk|sed|cut|sort|tac|nl|jq|yq|vi|vim|nvim|nano|dotenv)\\b|(^|[;\u0026|(\\n]\\s*)\\.\\s)[^|;\u0026\\n]*((?i:\\.env(\\.([^\\s/'\"|;\u0026\u003c\u003e().est][^\\s/'\"|;\u0026\u003c\u003e().]*|e(|[^\\s/'\"|;\u0026\u003c\u003e().x][^\\s/'\"|;\u0026\u003c\u003e().]*|x(|[^\\s/'\"|;\u0026\u003c\u003e().a][^\\s/'\"|;\u0026\u003c\u003e().]*|a(|[^\\s/'\"|;\u0026\u003c\u003e().m][^\\s/'\"|;\u0026\u003c\u003e().]*)))|s(|[^\\s/'\"|;\u0026\u003c\u003e().a][^\\s/'\"|;\u0026\u003c\u003e().]*|a(|[^\\s/'\"|;\u0026\u003c\u003e().m][^\\s/'\"|;\u0026\u003c\u003e().]*|m(|[^\\s/'\"|;\u0026\u003c\u003e().p][^\\s/'\"|;\u0026\u003c\u003e().]*)))|t(|[^\\s/'\"|;\u0026\u003c\u003e().e][^\\s/'\"|;\u0026\u003c\u003e().]*|e(|[^\\s/'\"|;\u0026\u003c\u003e().m][^\\s/'\"|;\u0026\u003c\u003e().]*|m(|[^\\s/'\"|;\u0026\u003c\u003e().p][^\\s/'\"|;\u0026\u003c\u003e().]*|p(|[^\\s/'\"|;\u0026\u003c\u003e().l][^\\s/'\"|;\u0026\u003c\u003e().]*))))))*|\\.envrc)([\\s'\"|;\u0026\u003c\u003e()]|$)|[\\s/'\"|;\u0026\u003c\u003e()=]((?i:[^\\s/'\"|;\u0026\u003c\u003e()]*([^\\s/'\"|;\u0026\u003c\u003e()abcenst]|[^\\s/'\"|;\u0026\u003c\u003e()c]a|[^\\s/'\"|;\u0026\u003c\u003e()u]b|[^\\s/'\"|;\u0026\u003c\u003e()p]ub|[^\\s/'\"|;\u0026\u003c\u003e()i]c|[^\\s/'\"|;\u0026\u003c\u003e()l]ic|[^\\s/'\"|;\u0026\u003c\u003e()b]lic|[^\\s/'\"|;\u0026\u003c\u003e()u]blic|[^\\s/'\"|;\u0026\u003c\u003e()p]ublic|[^\\s/'\"|;\u0026\u003c\u003e()lt]e|[^\\s/'\"|;\u0026\u003c\u003e()d]le|[^\\s/'\"|;\u0026\u003c\u003e()n]dle|[^\\s/'\"|;\u0026\u003c\u003e()u]ndle|[^\\s/'\"|;\u0026\u003c\u003e()b]undle|[^\\s/'\"|;\u0026\u003c\u003e()a]te|[^\\s/'\"|;\u0026\u003c\u003e()c]ate|[^\\s/'\"|;\u0026\u003c\u003e()i]cate|[^\\s/'\"|;\u0026\u003c\u003e()f]icate|[^\\s/'\"|;\u0026\u003c\u003e()i]ficate|[^\\s/'\"|;\u0026\u003c\u003e()t]ificate|[^\\s/'\"|;\u0026\u003c\u003e()r]tificate|[^\\s/'\"|;\u0026\u003c\u003e()e]rtificate|[^\\s/'\"|;\u0026\u003c\u003e()c]ertificate|[^\\s/'\"|;\u0026\u003c\u003e()i]n|[^\\s/'\"|;\u0026\u003c\u003e()a]in|[^\\s/'\"|;\u0026\u003c\u003e()h]ain|[^\\s/'\"|;\u0026\u003c\u003e()c]hain|[^\\s/'\"|;\u0026\u003c\u003e()et]s|[^\\s/'\"|;\u0026\u003c\u003e()t]es|[^\\s/'\"|;\u0026\u003c\u003e()a]tes|[^\\s/'\"|;\u0026\u003c\u003e()c]ates|[^\\s/'\"|;\u0026\u003c\u003e()i]cates|[^\\s/'\"|;\u0026\u003c\u003e()f]icates|[^\\s/'\"|;\u0026\u003c\u003e()i]ficates|[^\\s/'\"|;\u0026\u003c\u003e()t]ificates|[^\\s/'\"|;\u0026\u003c\u003e()r]tificates|[^\\s/'\"|;\u0026\u003c\u003e()e]rtificates|[^\\s/'\"|;\u0026\u003c\u003e()c]ertificates|[^\\s/'\"|;\u0026\u003c\u003e()r]ts|[^\\s/'\"|;\u0026\u003c\u003e()e]rts|[^\\s/'\"|;\u0026\u003c\u003e()c]erts|[^\\s/'\"|;\u0026\u003c\u003e()r]t|[^\\s/'\"|;\u0026\u003c\u003e()ce]rt|[^\\s/'\"|;\u0026\u003c\u003e()c]ert)|a|b|ub|c|ic|lic|blic|ublic|e|le|dle|ndle|undle|te|ate|cate|icate|ficate|ificate|tificate|rtificate|ertificate|n|in|ain|hain|s|es|tes|ates|cates|icates|ficates|ificates|tificates|rtificates|ertificates|ts|rts|erts|t|rt|ert))?\\.pem\\b|\\.key\\b|id_(rsa|dsa|ecdsa|ed25519)(_sk)?(\\.([^\\s/'\"|;\u0026\u003c\u003e()p][^\\s/'\"|;\u0026\u003c\u003e()]*|p(|[^\\s/'\"|;\u0026\u003c\u003e()u][^\\s/'\"|;\u0026\u003c\u003e()]*|u(|[^\\s/'\"|;\u0026\u003c\u003e()b][^\\s/'\"|;\u0026\u003c\u003e()]*))))?([\\s'\"|;\u0026\u003c\u003e()]|$)|\\.npmrc\\b|\\.netrc\\b|\\.pgpass\\b|\\.git-credentials\\b|\\.aws/credentials\\b|\\.kube/config\\b|\\.tfvars\\b|\\.sigdek/device\\.json)"
+    },
+    {
+      "id": "database-destructive",
+      "label": "Destructive database statement",
+      "effect": "flag",
+      "kinds": [
+        "shell"
+      ],
+      "command": "re:(?i)\\b(drop\\s+(table|database|schema)\\s+(if\\s+exists\\s+)?[\\w.\"`\\[\\]]+|truncate\\s+(table\\s+)?(only\\s+)?[\\w.\"`\\[\\]]+)\\s*(;|\\bcascade\\b|\\brestrict\\b|\\brestart\\b)|(^|[\\n;(]|[\"'`]|\\s-{1,2}[A-Za-z][\\w-]*[\\s=])\\s*(drop\\s+(table|database|schema)\\s+(if\\s+exists\\s+)?[\\w.\"`\\[\\]]+|truncate\\s+(table\\s+)?(only\\s+)?[\\w.\"`\\[\\]]+)\\s*(;|,|$|[\"'`]|\\bcascade\\b|\\brestrict\\b|\\brestart\\b)|\\bdelete\\s+from\\s+\\S+\\s*;|(^|[\\n;(]|[\"'`]|\\s-{1,2}[A-Za-z][\\w-]*[\\s=])\\s*delete\\s+from\\s+\\S+\\s*($|[\"'`])|(^|[;\u0026|(\\n`]|\\$\\()\\s*([A-Za-z_][A-Za-z0-9_]*=\\S*\\s+|(time|nohup|nice|exec|command|env)\\s+(-\\S+\\s+)*)*(sudo\\s+(-\\S+\\s+)*)?dropdb\\s+[\\w-]|\\bredis-cli\\b[^|;\u0026\\n]*\\bflush(all|db)\\b"
+    },
+    {
+      "id": "remote-script",
+      "label": "Remote script piped to a shell",
+      "effect": "flag",
+      "kinds": [
+        "shell"
+      ],
+      "command": "re:\\b(curl|wget)\\b[^;\u0026\\n]*[^|;\u0026\\n]\\|\\s*(sudo\\s+(-\\S+\\s+)*)?(\\S*/)?(env\\s+)?((ba|z|da|k|fi)?sh(\\s*($|[|;\u0026\\n)`])|\\s+(-|--|-[abd-zA-Z][a-zA-Z]*)(\\s|$))|(python[0-9.]*|perl|ruby|node|php)(\\s*($|[|;\u0026\\n)`])|\\s+-(\\s|$)))|(\\b((ba|z|da|k)?sh|python[0-9.]*|perl|ruby|node|source|eval)\\b|(^|[;\u0026|\\n]\\s*)\\.\\s)[^|;\u0026\\n]*(\\$\\(|\u003c\\(|`)\\s*(curl|wget)\\b"
+    },
+    {
+      "id": "package-publish",
+      "label": "Package or release published",
+      "effect": "flag",
+      "kinds": [
+        "shell"
+      ],
+      "command": "re:(\\b(npm|pnpm|yarn|bun)\\s+(?:-{1,2}[a-zA-Z][\\w-]*(?:=\\S+|\\s+[^-\\s]\\S*)?\\s+)*(npm\\s+)?publish\\b|\\b(cargo|poetry|uv|hatch|flit)\\s+(?:-{1,2}[a-zA-Z][\\w-]*(?:=\\S+|\\s+[^-\\s]\\S*)?\\s+)*publish\\b|\\btwine\\s+upload\\b|\\bgh\\s+release\\s+create\\b|\\bdocker\\s+(image\\s+)?push\\b|\\bgem\\s+push\\b|\\bdotnet\\s+nuget\\s+push\\b)([ \\t]+([^\\s|;\u0026\\-][^\\s|;\u0026]*|-(|[^\\s|;\u0026\\-h][^\\s|;\u0026]*|-(|[^\\s|;\u0026dh][^\\s|;\u0026]*|d(|[^\\s|;\u0026r][^\\s|;\u0026]*|r(|[^\\s|;\u0026y][^\\s|;\u0026]*|y(|[^\\s|;\u0026\\-][^\\s|;\u0026]*|-(|[^\\s|;\u0026r][^\\s|;\u0026]*|r(|[^\\s|;\u0026u][^\\s|;\u0026]*|u(|[^\\s|;\u0026n][^\\s|;\u0026]*|n([^\\s|;\u0026\\=][^\\s|;\u0026]*|=(|[^\\s|;\u0026cst][^\\s|;\u0026]*))))))))|h(|[^\\s|;\u0026e][^\\s|;\u0026]*|e(|[^\\s|;\u0026l][^\\s|;\u0026]*|l(|[^\\s|;\u0026p][^\\s|;\u0026]*|p([^\\s|;\u0026][^\\s|;\u0026]*)))))|h([^\\s|;\u0026][^\\s|;\u0026]*))))*[ \\t]*($|[|;\u0026\\n)])"
+    },
+    {
+      "id": "privilege",
+      "label": "Privileged command",
+      "effect": "flag",
+      "kinds": [
+        "shell"
+      ],
+      "command": "re:(^|[;\u0026|(\\n`]|\\$\\()\\s*([A-Za-z_][A-Za-z0-9_]*=\\S*\\s+|(time|nohup|nice|exec|command|env)\\s+(-\\S+\\s+)*)*(sudo|doas|pkexec|run0)(\\s+-\\S+)*(\\s+([^\\s|;\u0026()t\\-][^\\s|;\u0026()]*|t(|[^\\s|;\u0026()r][^\\s|;\u0026()]*|r(|[^\\s|;\u0026()u][^\\s|;\u0026()]*|u(|[^\\s|;\u0026()e][^\\s|;\u0026()]*|e([^\\s|;\u0026()][^\\s|;\u0026()]*)))))([\\s|;\u0026()]|$)|\\s*($|[|;\u0026\\n)]))|(^|[;\u0026|(\\n`]|\\$\\()\\s*([A-Za-z_][A-Za-z0-9_]*=\\S*\\s+|(time|nohup|nice|exec|command|env)\\s+(-\\S+\\s+)*)*su(\\s|$)|\\bchmod\\s+(-\\S+\\s+)*(0?777|a\\+rwx|ugo\\+rwx)\\b"
+    },
+    {
+      "id": "history-rewrite",
+      "label": "Git history rewritten",
+      "effect": "flag",
+      "kinds": [
+        "shell"
+      ],
+      "command": "re:\\bgit\\s+(?:(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)(?:=|\\s+)(?:'[^']*'|\"[^\"]*\"|\\S+)\\s+|-{1,2}[a-zA-Z][\\w-]*(?:=\\S+)?\\s+)*(reset\\b[^|;\u0026\\n]*\\s--hard\\b|rebase\\b|filter-(branch|repo)\\b|push\\b[^|;\u0026\\n]*\\s(--delete\\b|-d\\b|:[^\\s:]+)|branch\\b[^|;\u0026\\n]*\\s-[a-zA-Z]*D\\b|clean\\b[^|;\u0026\\n]*\\s(-[a-zA-Z]*f[a-zA-Z]*|--force)\\b)"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+node_modules/
+dist/
+*.sigdek-tmp-*
+CLAUDE.local.md

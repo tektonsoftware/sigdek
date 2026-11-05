@@ -1,0 +1,115 @@
+[
+  {
+    "name": "session_start",
+    "input": {
+      "v": 1,
+      "id": "019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b",
+      "ts": "2026-10-28T19:28:24.123Z",
+      "seq": 1,
+      "prev": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "",
+      "device": "dev_01",
+      "user": null,
+      "tool": "claude-code",
+      "tool_version": null,
+      "session": "abc123",
+      "prompt_id": null,
+      "repo": {
+        "remote": "github.com/acme/api",
+        "root_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "event": "session_start",
+      "model": "claude-opus-5-5",
+      "redactions": 0
+    },
+    "canonical": "{\"device\":\"dev_01\",\"event\":\"session_start\",\"id\":\"019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b\",\"model\":\"claude-opus-5-5\",\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"prompt_id\":null,\"redactions\":0,\"repo\":{\"remote\":\"github.com/acme/api\",\"root_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"seq\":1,\"session\":\"abc123\",\"tool\":\"claude-code\",\"tool_version\":null,\"ts\":\"2026-10-28T19:28:24.123Z\",\"user\":null,\"v\":1}",
+    "sha256": "4ee68b2ac242775274128c268807b201cf8ee8ec4dd7be31c9e21a4f72c8cb76"
+  },
+  {
+    "name": "action_with_awkward_strings",
+    "input": {
+      "v": 1,
+      "id": "019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b",
+      "ts": "2026-10-28T19:28:24.123Z",
+      "seq": 2,
+      "prev": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "",
+      "device": "dev_01",
+      "user": null,
+      "tool": "claude-code",
+      "tool_version": null,
+      "session": "abc123",
+      "prompt_id": "p-1",
+      "repo": {
+        "remote": "github.com/acme/api",
+        "root_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "event": "action",
+      "model": "claude-opus-5-5",
+      "redactions": 2,
+      "action": {
+        "kind": "shell",
+        "name": "Bash",
+        "command": "echo \"héllo 🌍\"\t&& printf '\\\\'    \u0001\u001f </script> & done\n",
+        "input_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "ran",
+      "duration_ms": 1234,
+      "rule": "force-push",
+      "permission_mode": "default"
+    },
+    "canonical": "{\"action\":{\"command\":\"echo \\\"héllo 🌍\\\"\\t&& printf '\\\\\\\\'    \\u0001\\u001f </script> & done\\n\",\"input_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"kind\":\"shell\",\"name\":\"Bash\"},\"device\":\"dev_01\",\"duration_ms\":1234,\"event\":\"action\",\"id\":\"019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b\",\"model\":\"claude-opus-5-5\",\"outcome\":\"ran\",\"permission_mode\":\"default\",\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"prompt_id\":\"p-1\",\"redactions\":2,\"repo\":{\"remote\":\"github.com/acme/api\",\"root_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"rule\":\"force-push\",\"seq\":2,\"session\":\"abc123\",\"tool\":\"claude-code\",\"tool_version\":null,\"ts\":\"2026-10-28T19:28:24.123Z\",\"user\":null,\"v\":1}",
+    "sha256": "33f7181a67cfd334f8bcea362f383edaeec614b15f77077244f6cf6d61bc44b4"
+  },
+  {
+    "name": "key_order_utf16",
+    "input": {
+      "b": 1,
+      "a": [
+        true,
+        false,
+        null
+      ],
+      "é": "x",
+      "😀": "y",
+      "ﬀ": "z",
+      "A": {
+        "z": 0,
+        "": -5
+      }
+    },
+    "canonical": "{\"A\":{\"\":-5,\"z\":0},\"a\":[true,false,null],\"b\":1,\"é\":\"x\",\"😀\":\"y\",\"ﬀ\":\"z\"}",
+    "sha256": "c9c5d4aea9b2159d6912f0f9b55c8c8dab89d3de6873f9f0684a650471192bb1"
+  },
+  {
+    "name": "nested_nulls",
+    "input": {
+      "v": 1,
+      "id": "019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b",
+      "ts": "2026-10-28T19:28:24.123Z",
+      "seq": 1,
+      "prev": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "",
+      "device": "dev_01",
+      "user": null,
+      "tool": "claude-code",
+      "tool_version": null,
+      "session": "abc123",
+      "prompt_id": null,
+      "repo": {
+        "remote": "github.com/acme/api",
+        "root_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "event": "subagent_stop",
+      "model": "claude-opus-5-5",
+      "redactions": 0,
+      "subagent": null,
+      "config": {
+        "source": null,
+        "path": "~/.claude/settings.json"
+      }
+    },
+    "canonical": "{\"config\":{\"path\":\"~/.claude/settings.json\",\"source\":null},\"device\":\"dev_01\",\"event\":\"subagent_stop\",\"id\":\"019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b\",\"model\":\"claude-opus-5-5\",\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"prompt_id\":null,\"redactions\":0,\"repo\":{\"remote\":\"github.com/acme/api\",\"root_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"seq\":1,\"session\":\"abc123\",\"subagent\":null,\"tool\":\"claude-code\",\"tool_version\":null,\"ts\":\"2026-10-28T19:28:24.123Z\",\"user\":null,\"v\":1}",
+    "sha256": "f0cf1fb0c32f2f3e7ca706af1ffb8177051937ec6908486c1510565bd060a913"
+  }
+]

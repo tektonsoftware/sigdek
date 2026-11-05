@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigdek.com/schema/agent-event.v1.schema.json",
+  "title": "AgentEvent",
+  "description": "One record of something an AI coding agent did, as the SigDek recorder writes it. The recorder and the hosted service both generate their types from this file. `hash` is the SHA-256 of the record's RFC 8785 canonical JSON with the `hash` field removed; `prev` is the previous record's `hash` on the same device.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "id", "ts", "seq", "prev", "hash", "device", "user", "tool", "tool_version", "session", "prompt_id", "repo", "event", "redactions"],
+  "properties": {
+    "v": { "const": 1, "description": "Schema version." },
+    "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", "description": "UUIDv7, set by the recorder." },
+    "ts": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$", "description": "When the recorder wrote the record, UTC, millisecond precision." },
+    "seq": { "type": "integer", "minimum": 1, "description": "Position in this device's chain, starting at 1." },
+    "prev": { "$ref": "#/$defs/sha256", "description": "Hash of the previous record on this device; 64 zeros for the first." },
+    "hash": { "$ref": "#/$defs/sha256" },
+    "device": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Device id, generated on the machine and registered at sign-in." },
+    "user": { "type": ["string", "null"], "maxLength": 320, "description": "Signed-in user's email; null before sign-in." },
+    "tool": { "enum": ["claude-code", "cursor"] },
+    "tool_version": { "type": ["string", "null"], "maxLength": 64 },
+    "session": { "type": "string", "minLength": 1, "maxLength": 128, "description": "The agent tool's session or conversation id." },
+    "prompt_id": { "type": ["string", "null"], "maxLength": 128, "description": "Groups actions under the prompt that caused them." },
+    "repo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["remote", "root_hash"],
+      "properties": {
+        "remote": { "type": ["string", "null"], "maxLength": 512, "description": "Normalized origin remote, e.g. github.com/acme/api; credentials removed." },
+        "root_hash": { "$ref": "#/$defs/sha256", "description": "SHA-256 of the repository root path, so local-only repositories stay distinct without revealing the path." }
+      }
+    },
+    "event": { "enum": ["session_start", "session_end", "prompt", "action", "subagent_start", "subagent_stop", "config_change"] },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "input_hash"],
+      "properties": {
+        "kind": { "enum": ["shell", "file_read", "file_edit", "web", "mcp", "other"] },
+        "name": { "type": "string", "maxLength": 128, "description": "The tool's own name for the action." },
+        "command": { "type": "string", "maxLength": 4096, "description": "Shell actions only, secrets stripped." },
+        "path": { "type": "string", "maxLength": 1024, "description": "File actions only; relative to the repository root when inside it, ~ for the home directory otherwise." },
+        "url": { "type": "string", "maxLength": 2048, "description": "Web actions only, credentials and query secrets stripped." },
+        "mcp": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["server", "tool"],
+          "properties": { "server": { "type": "string", "maxLength": 128 }, "tool": { "type": "string", "maxLength": 128 } }
+        },
+        "input_hash": { "$ref": "#/$defs/sha256", "description": "Hash of the full tool input; the input itself is never stored." }
+      }
+    },
+    "outcome": { "enum": ["ran", "failed", "denied_by_rule", "denied", "attempted"], "description": "What happened to the action: it ran, failed, was stopped by a Block rule (denied_by_rule) or was refused by the agent tool or its user (denied). attempted: recorded before the action ran because it changes SigDek's own setup; whether it then ran isn't known (a later record for the same call, when there is one, says)." },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "rule": { "type": "string", "maxLength": 64, "description": "Id of the sensitive-action or deny rule that matched." },
+    "prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hash", "length"],
+      "properties": { "hash": { "$ref": "#/$defs/sha256" }, "length": { "type": "integer", "minimum": 0, "description": "Unicode code points." } }
+    },
+    "model": { "type": ["string", "null"], "maxLength": 128 },
+    "permission_mode": { "type": ["string", "null"], "maxLength": 64, "description": "Claude Code only; absent on some events." },
+    "subagent": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["id", "type"],
+      "properties": { "id": { "type": "string", "maxLength": 128 }, "type": { "type": "string", "maxLength": 128 } }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "source": { "type": ["string", "null"], "maxLength": 64 }, "path": { "type": ["string", "null"], "maxLength": 1024 } },
+      "description": "config_change only: which settings changed."
+    },
+    "redactions": { "type": "integer", "minimum": 0, "description": "How many secret values were stripped from this record." }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

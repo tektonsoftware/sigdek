@@ -1,0 +1,11 @@
+{
+  "name": "sigdek",
+  "owner": { "name": "Tekton Software LLC", "email": "hello@sigdek.com" },
+  "plugins": [
+    {
+      "name": "sigdek",
+      "source": "./plugins/claude-code",
+      "description": "Records what Claude Code's agents do in your repositories, for your team's audit evidence."
+    }
+  ]
+}

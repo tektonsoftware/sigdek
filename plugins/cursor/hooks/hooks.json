@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/launch.sh\" hook cursor sessionStart | grep '^{' || echo '{}'",
+        "timeout": 10
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/launch.sh\" hook cursor sessionEnd | grep '^{' || echo '{}'",
+        "timeout": 10
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/launch.sh\" hook cursor beforeSubmitPrompt | grep '^{' || echo '{\"continue\":true}'",
+        "timeout": 10
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/launch.sh\" hook cursor preToolUse | grep '^{' || echo '{\"permission\":\"allow\"}'",
+        "timeout": 10
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/launch.sh\" hook cursor postToolUse | grep '^{' || echo '{}'",
+        "timeout": 10
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/launch.sh\" hook cursor postToolUseFailure | grep '^{' || echo '{}'",
+        "timeout": 10
+      }
+    ],
+    "subagentStart": [
+      {
+        "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/launch.sh\" hook cursor subagentStart | grep '^{' || echo '{\"permission\":\"allow\"}'",
+        "timeout": 10
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/launch.sh\" hook cursor subagentStop | grep '^{' || echo '{}'",
+        "timeout": 10
+      }
+    ],
+    "stop": [
+      {
+        "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/launch.sh\" hook cursor stop | grep '^{' || echo '{}'",
+        "timeout": 10
+      }
+    ]
+  }
+}
