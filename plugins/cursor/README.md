@@ -54,4 +54,4 @@ Secrets (cloud keys, tokens, passwords in URLs and flags, private keys) are stri
 - Support: support@sigdek.com. Security reports: security@sigdek.com (see SECURITY.md).
 - Source: https://github.com/tektonsoftware/sigdek
 
-SigDek is a product of Tekton Software LLC.
+SigDek is a product of Tekton Software.

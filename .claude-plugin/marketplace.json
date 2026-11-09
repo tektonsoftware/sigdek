@@ -1,6 +1,6 @@
 {
   "name": "sigdek",
-  "owner": { "name": "Tekton Software LLC", "email": "hello@sigdek.com" },
+  "owner": { "name": "Tekton Software", "email": "hello@sigdek.com" },
   "description": "SigDek's Claude Code plugin: records what Claude Code's agents do, for your team's audit evidence.",
   "plugins": [
     {

@@ -132,7 +132,7 @@ writeFileSync(
   `${header("defaultLocale")}PackageIdentifier: ${id}
 PackageVersion: ${version}
 PackageLocale: en-US
-Publisher: Tekton Software LLC
+Publisher: Tekton Software
 PublisherUrl: https://sigdek.com
 PublisherSupportUrl: https://sigdek.com/docs/
 PrivacyUrl: https://sigdek.com/privacy/

@@ -4,7 +4,7 @@ SigDek records what AI coding agents do on your team's machines (who ran which a
 
 This repository is the open-source recorder that runs on developer machines, plus the Claude Code and Cursor plugins that install it. The hosted team log and reports live at [sigdek.com](https://sigdek.com).
 
-SigDek is a product of Tekton Software LLC.
+SigDek is a product of Tekton Software.
 
 ## Install
 

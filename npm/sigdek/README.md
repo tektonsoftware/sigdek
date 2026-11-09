@@ -12,4 +12,4 @@ This package holds a small launcher; the recorder itself is a single Go binary b
 
 Source, schema and security notes: https://github.com/tektonsoftware/sigdek
 
-SigDek is a product of Tekton Software LLC.
+SigDek is a product of Tekton Software.

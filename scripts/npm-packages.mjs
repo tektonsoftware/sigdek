@@ -16,7 +16,7 @@ const common = {
   license: "Apache-2.0",
   homepage: "https://sigdek.com",
   repository: { type: "git", url: "git+https://github.com/tektonsoftware/sigdek.git" },
-  author: "Tekton Software LLC <hello@sigdek.com>",
+  author: "Tekton Software <hello@sigdek.com>",
 };
 const targets = [
   ["darwin", "amd64", "darwin", "x64"],
