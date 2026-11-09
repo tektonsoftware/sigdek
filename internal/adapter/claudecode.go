@@ -110,7 +110,10 @@ func ClaudeCode(raw []byte, ctx Context) Result {
 		r.Redactions = n
 		return Result{Record: r}
 	case "Stop":
-		return Result{} // nothing to record; an upload starts if one is due
+		// Nothing to record. The turn is over, so its records go up now: an agent can sit idle
+		// for hours after a turn, and no later hook would send them until the next prompt or
+		// the session's end (SMOKE-1). One upload per turn is well under ingest's limit.
+		return Result{Flush: true}
 	case "":
 		return Result{Drop: "hook input has no hook_event_name"}
 	default:

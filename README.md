@@ -84,7 +84,7 @@ agent tool ──hook event──▶ launcher (.sigdek/launch.sh, or the plugin'
                               │ adapter → match rules → answer the agent → cut and redact → seal into the hash chain
                               ▼
                           ~/.sigdek/log/events-YYYY-MM.jsonl
-                              │ at the end of each session, and at most once a minute while working, in a separate process
+                              │ at the end of each turn and each session, and at most once a minute during a turn, in a separate process
                               ▼
                           ingest.sigdek.com  (only after `sigdek login`)
 ```

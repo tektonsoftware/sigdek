@@ -296,9 +296,9 @@ func TestConcurrentHookProcesses(t *testing.T) {
 	}
 }
 
-// A signed-in device uploads in the background at the end of a session, without the hook
-// waiting for it, even when an upload ran less than a minute ago.
-func TestSessionEndTriggersBackgroundUpload(t *testing.T) {
+// A signed-in device uploads in the background at the end of each turn and of the session,
+// without the hook waiting for it, even when an upload ran less than a minute ago.
+func TestTurnAndSessionEndTriggerBackgroundUpload(t *testing.T) {
 	got := make(chan int, 4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -315,20 +315,34 @@ func TestSessionEndTriggersBackgroundUpload(t *testing.T) {
 	os.MkdirAll(config.StateDir(home), 0o700)
 	os.WriteFile(filepath.Join(config.StateDir(home), "flush.stamp"), nil, 0o600) // an upload just ran
 	runHook(t, home, []string{"claude-code"}, cc(dir, "UserPromptSubmit", `,"prompt":"x"`))
-	runHook(t, home, []string{"claude-code"}, cc(dir, "Stop", ""))
+	runHook(t, home, []string{"claude-code"}, cc(dir, "PostToolUse", `,"tool_name":"Bash","tool_input":{"command":"ls"}`))
 	select {
 	case n := <-got:
-		t.Fatalf("Stop within a minute of the last upload started another (%d records)", n)
+		t.Fatalf("an action within a minute of the last upload started another (%d records)", n)
 	case <-time.After(300 * time.Millisecond):
 	}
-	r := runHook(t, home, []string{"claude-code"}, cc(dir, "SessionEnd", `,"reason":"other"`))
+	// The end of the turn sends the turn's records at once, minute or not (SMOKE-1).
+	r := runHook(t, home, []string{"claude-code"}, cc(dir, "Stop", ""))
+	if r.elapsed > 200*time.Millisecond {
+		t.Fatalf("Stop hook waited for the upload (%v)", r.elapsed)
+	}
+	select {
+	case n := <-got:
+		if n != 2 {
+			t.Fatalf("Stop uploaded %d records, want the prompt and the action", n)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop started no background upload")
+	}
+	waitForUploader(t, home)
+	r = runHook(t, home, []string{"claude-code"}, cc(dir, "SessionEnd", `,"reason":"other"`))
 	if r.elapsed > 200*time.Millisecond {
 		t.Fatalf("SessionEnd hook waited for the upload (%v)", r.elapsed)
 	}
 	select {
 	case n := <-got:
-		if n != 2 {
-			t.Fatalf("uploaded %d records, want 2", n)
+		if n != 1 {
+			t.Fatalf("SessionEnd uploaded %d records, want its own", n)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("no background upload arrived")

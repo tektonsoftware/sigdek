@@ -147,25 +147,45 @@ func TestClaudeCodeHookStandsAsideForCursor(t *testing.T) {
 	}
 }
 
-// QA REC-16: Stop fires after every turn and follows the once-a-minute upload limit; only
-// SessionEnd uploads regardless.
-func TestOnlySessionEndBypassesTheUploadLimit(t *testing.T) {
+// Uploads follow the once-a-minute limit while an agent works, except at the end of a turn
+// (Claude Code's Stop, Cursor's stop) and of a session, which always start one: otherwise a
+// turn that ends within a minute of the last upload leaves its records on the machine until
+// the next hook, which an idle session may never send (SMOKE-1).
+func TestTurnAndSessionEndsBypassTheUploadLimit(t *testing.T) {
 	home, dir := t.TempDir(), repo(t)
 	config.SaveDevice(home, config.Device{ID: "dev_x", Token: "tok"})
 	var n int
 	o := opts(home, &n)
-	Run("claude-code", "", strings.NewReader(cc(dir, "Stop", "")), io.Discard, o)
+	Run("claude-code", "", strings.NewReader(cc(dir, "SessionStart", "")), io.Discard, o)
 	if n != 1 {
 		t.Fatalf("first event should start an upload (none ran yet): %d", n)
 	}
-	Run("claude-code", "", strings.NewReader(cc(dir, "Stop", "")), io.Discard, o)
-	Run("cursor", "stop", strings.NewReader(`{"hook_event_name":"stop","conversation_id":"c"}`), io.Discard, o)
+	Run("claude-code", "", strings.NewReader(cc(dir, "UserPromptSubmit", `,"prompt":"x"`)), io.Discard, o)
+	Run("claude-code", "", strings.NewReader(cc(dir, "PostToolUse", `,"tool_name":"Bash","tool_input":{"command":"ls"}`)), io.Discard, o)
 	if n != 1 {
-		t.Fatalf("Stop within the minute started an upload: %d", n)
+		t.Fatalf("events within the minute started an upload: %d", n)
+	}
+	Run("claude-code", "", strings.NewReader(cc(dir, "Stop", "")), io.Discard, o)
+	if n != 2 {
+		t.Fatalf("Stop within the minute should start an upload: %d", n)
+	}
+	Run("cursor", "stop", strings.NewReader(`{"hook_event_name":"stop","conversation_id":"c"}`), io.Discard, o)
+	if n != 3 {
+		t.Fatalf("Cursor's stop within the minute should start an upload: %d", n)
 	}
 	Run("claude-code", "", strings.NewReader(cc(dir, "SessionEnd", "")), io.Discard, o)
-	if n != 2 {
+	if n != 4 {
 		t.Fatalf("SessionEnd should always start an upload: %d", n)
+	}
+}
+
+// Signed out, the end of a turn uploads nothing: records stay on the machine until login.
+func TestTurnEndUploadsNothingSignedOut(t *testing.T) {
+	home, dir := t.TempDir(), repo(t)
+	var n int
+	Run("claude-code", "", strings.NewReader(cc(dir, "Stop", "")), io.Discard, opts(home, &n))
+	if n != 0 {
+		t.Fatalf("signed out, Stop started an upload: %d", n)
 	}
 }
 

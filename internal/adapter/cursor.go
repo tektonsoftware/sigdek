@@ -140,7 +140,7 @@ func Cursor(raw []byte, ctx Context, hint string) Result {
 		r.DurationMS = durationMS(p.num("duration_ms"))
 		return Result{Record: r, Stdout: ok}
 	case "stop":
-		return Result{Stdout: ok} // nothing to record; an upload starts if one is due
+		return Result{Stdout: ok, Flush: true} // nothing to record; the turn's records go up now, as for Claude Code's Stop
 	case "":
 		return Result{Stdout: ok, Drop: "hook input has no hook_event_name"}
 	}

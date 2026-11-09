@@ -24,7 +24,7 @@ The plugin is free and open source (Apache-2.0) and works on its own, keeping re
 - **Writes:** records to `~/.sigdek/log/` (one file per month), errors to `~/.sigdek/errors.log`, and the machine's settings and your team's rules to `~/.sigdek`. The local log isn't trimmed; delete `~/.sigdek` to remove it.
 - **Sends:** nothing until you run `sigdek login`.
   - Sign-in happens in your browser at app.sigdek.com.
-  - After that, records go over HTTPS to ingest.sigdek.com, run by Tekton Software. They're sent by a separate background process at the end of each session and at most once a minute while you work, and each upload brings back your team's rules.
+  - After that, records go over HTTPS to ingest.sigdek.com, run by Tekton Software. They're sent by a separate background process when the agent finishes each turn, when the session ends, and at most once a minute during a long turn, and each upload brings back your team's rules.
   - One exception: an action that changes SigDek's own setup (deleting `.sigdek`, `sigdek logout`, editing the hook files) is recorded as attempted, and the hook uploads that record before the action runs, waiting at most about a second; if that upload doesn't finish in time, the background upload takes over.
 
 ## What a record holds

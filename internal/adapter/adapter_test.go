@@ -158,8 +158,8 @@ func TestClaudeCodeOtherEvents(t *testing.T) {
 			}
 		}},
 		{"Stop", map[string]any{"stop_hook_active": false, "last_assistant_message": "done"}, func(t *testing.T, res Result) {
-			// Stop fires after every turn; uploads follow the once-a-minute limit, not Stop.
-			if res.Record != nil || res.Flush || res.Stdout != nil || res.Drop != "" {
+			// Stop fires after every turn and uploads the turn's records, whatever the minute limit says (SMOKE-1).
+			if res.Record != nil || !res.Flush || res.Stdout != nil || res.Drop != "" {
 				t.Fatalf("%+v", res)
 			}
 		}},
@@ -405,6 +405,14 @@ func TestPartialObject(t *testing.T) {
 	}
 	if partialObject([]byte(`[1,2`)) != nil || len(partialObject([]byte(strings.Repeat("{\"a\":", 10000)))) > 1 {
 		t.Fatal("non-objects and deep nesting must not explode")
+	}
+}
+
+// SMOKE-1: Cursor's stop ends a turn, so it records nothing, answers, and uploads the turn's records.
+func TestCursorStopUploads(t *testing.T) {
+	res := Cursor(cursorPayloadJSON(repo(t), "stop", map[string]any{"status": "completed", "loop_count": 0}), ctx(), "")
+	if res.Record != nil || !res.Flush || res.Urgent || string(res.Stdout) != "{}\n" || res.Drop != "" {
+		t.Fatalf("%+v", res)
 	}
 }
 
