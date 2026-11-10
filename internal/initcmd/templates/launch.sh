@@ -92,7 +92,7 @@ fi
 [ -n "$BASE" ] || exit 0
 mkdir -p "$CACHE/$VERSION" 2>/dev/null || exit 0
 
-# A download carrying on in the background (see later, below) leaves the network to itself.
+# While a download carries on in the background (see later, below), other events leave it be.
 MARK="$CACHE/$VERSION/.downloading"
 [ -n "$(find "$MARK" -mmin -7 2>/dev/null)" ] && exit 0
 
