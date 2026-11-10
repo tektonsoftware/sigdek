@@ -37,7 +37,7 @@ A hook command never stops the agent on its own: when the launcher is missing or
 | Where | Install |
 |---|---|
 | Any OS, with Node.js | `npm install -g sigdek` |
-| macOS or Linux, Homebrew | `brew tap tektonsoftware/sigdek https://github.com/tektonsoftware/sigdek` then `brew install sigdek` |
+| macOS or Linux, Homebrew | `brew tap tektonsoftware/sigdek https://github.com/tektonsoftware/sigdek` then `brew install tektonsoftware/sigdek/sigdek` (the full name tells Homebrew to trust this one formula, which it requires for formulae outside its own taps) |
 | Windows, Scoop | `scoop bucket add sigdek https://github.com/tektonsoftware/sigdek` then `scoop install sigdek` |
 | Windows, winget | `winget install TektonSoftware.SigDek`, available a few days after each release, once Microsoft merges its pull request |
 | Go 1.24 or later | `go install github.com/tektonsoftware/sigdek/cmd/sigdek@latest` |
