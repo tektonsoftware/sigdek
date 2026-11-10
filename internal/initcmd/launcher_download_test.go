@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -20,8 +21,9 @@ import (
 	"time"
 )
 
-// RR-8: on a link too slow for the hook's 8-second download, the launchers hand the download to
-// a background process that outlives the hook, and the next event after it lands records.
+// RR-8: on a link too slow for the hook's 8-second download, launch.sh hands the download to a
+// background process that outlives the hook, and the next event after it lands records;
+// launch.ps1 keeps what arrived and resumes it on the next events, with no background process.
 
 func TestMain(m *testing.M) {
 	// On Windows the launchers need a real .exe as the recorder; this test binary is that recorder
@@ -34,26 +36,50 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// slowServer serves one file at a fixed rate in bytes a second, like a slow link, and counts the
-// requests for it.
+// slowServer serves one file at a fixed rate in bytes a second, like a slow link. It answers
+// "Range: bytes=N-" with 206 or 416, as GitHub's release downloads do, unless told to ignore it,
+// and keeps each request's Range header.
 type slowServer struct {
 	*httptest.Server
-	hits atomic.Int32
+	hits        atomic.Int32
+	rate        atomic.Int64
+	ignoreRange atomic.Bool
+	mu          sync.Mutex
+	ranges      []string
 }
+
+var rangeHeader = regexp.MustCompile(`^bytes=(\d+)-$`)
 
 func newSlowServer(t *testing.T, name string, body []byte, rate int) *slowServer {
 	s := &slowServer{}
+	s.rate.Store(int64(rate))
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/"+name {
 			w.WriteHeader(404)
 			return
 		}
 		s.hits.Add(1)
-		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		s.mu.Lock()
+		s.ranges = append(s.ranges, r.Header.Get("Range"))
+		s.mu.Unlock()
+		from, status := 0, 200
+		if m := rangeHeader.FindStringSubmatch(r.Header.Get("Range")); m != nil && !s.ignoreRange.Load() {
+			from, _ = strconv.Atoi(m[1])
+			if from >= len(body) {
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", len(body)))
+				w.WriteHeader(416)
+				return
+			}
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", from, len(body)-1, len(body)))
+			status = 206
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)-from))
+		w.WriteHeader(status)
+		rate := int(s.rate.Load())
 		start, chunk := time.Now(), max(1024, rate/20)
-		for sent := 0; sent < len(body); {
-			n := min(chunk, len(body)-sent)
-			if _, err := w.Write(body[sent : sent+n]); err != nil {
+		for sent := 0; from+sent < len(body); {
+			n := min(chunk, len(body)-from-sent)
+			if _, err := w.Write(body[from+sent : from+sent+n]); err != nil {
 				return
 			}
 			w.(http.Flusher).Flush()
@@ -69,6 +95,12 @@ func newSlowServer(t *testing.T, name string, body []byte, rate int) *slowServer
 	}))
 	t.Cleanup(func() { s.CloseClientConnections(); s.Close() })
 	return s
+}
+
+func (s *slowServer) rangesSeen() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.ranges...)
 }
 
 // slowSeconds is how long the whole file takes at the slow server's rate: well past the hook's
@@ -227,14 +259,19 @@ func (d *download) temps() []string {
 	return m
 }
 
-// hookLimit is the most a first use on a slow link may take: Claude Code and Cursor give a hook
-// 10 seconds. Windows CI runs these tests under load, where Git Bash's process starts have added
-// up to 1.9 s to curl's 8 s; 11 s there still fails a hook that waits for the download.
-var hookLimit = map[bool]time.Duration{false: 9500 * time.Millisecond, true: 11 * time.Second}[runtime.GOOS == "windows"]
+// hookLimit is the most an event on a slow link may take: Claude Code and Cursor give a hook 10
+// seconds. launch.sh's curl has 8 s (6 s on Windows, where Git Bash's own process starts have
+// taken up to 1.9 s on a loaded CI runner); launch.ps1 stops 7 s after it started.
+const hookLimit = 9500 * time.Millisecond
 
-func launcherForms(t *testing.T) []string {
+// shortest is the least a slow first use of launch.sh takes: curl's whole limit.
+var shortest = map[bool]time.Duration{false: 7500 * time.Millisecond, true: 5500 * time.Millisecond}[runtime.GOOS == "windows"]
+
+// shForms are the shells to run launch.sh with: every POSIX shell installed, or Git Bash's sh
+// on Windows.
+func shForms(t *testing.T) []string {
 	if runtime.GOOS == "windows" {
-		return []string{gitBash(t), "powershell"}
+		return []string{gitBash(t)}
 	}
 	if _, err := exec.LookPath("curl"); err != nil {
 		t.Skip("curl not installed")
@@ -242,13 +279,12 @@ func launcherForms(t *testing.T) []string {
 	return shells(t)
 }
 
-// downloads is how many requests a slow first use makes: launch.sh's hook tries, then starts
-// again in the background; launch.ps1's hook waits on its hidden copy's one download.
-func downloads(shell string) int32 {
-	if shell == "powershell" {
-		return 1
+// launcherForms adds Windows PowerShell's launch.ps1 on Windows.
+func launcherForms(t *testing.T) []string {
+	if runtime.GOOS == "windows" {
+		return append(shForms(t), "powershell")
 	}
-	return 2
+	return shForms(t)
 }
 
 func label(shell string) string { return strings.TrimSuffix(filepath.Base(shell), ".exe") }
@@ -259,7 +295,7 @@ func TestLauncherFinishesASlowDownloadInTheBackground(t *testing.T) {
 	}
 	t.Parallel()
 	body, recEnv := recorderFor(t)
-	for _, sh := range launcherForms(t) {
+	for _, sh := range shForms(t) {
 		t.Run(label(sh), func(t *testing.T) {
 			t.Parallel()
 			d := newDownload(t, sh, body, "", recEnv)
@@ -267,7 +303,7 @@ func TestLauncherFinishesASlowDownloadInTheBackground(t *testing.T) {
 			// First use: the hook gives up on the download within its limit and answers as usual.
 			out, errOut, code, took := d.run("{}", "hook", "cursor", "preToolUse")
 			t.Logf("first hook: %v", took)
-			if code != 0 || out != "{\"permission\":\"allow\"}\n" || took > hookLimit || took < 7500*time.Millisecond {
+			if code != 0 || out != "{\"permission\":\"allow\"}\n" || took > hookLimit || took < shortest {
 				t.Fatalf("first hook: exit %d after %v, stdout %q, stderr %q", code, took, out, errOut)
 			}
 			if fileExists(d.bin) {
@@ -298,8 +334,8 @@ func TestLauncherFinishesASlowDownloadInTheBackground(t *testing.T) {
 			if code != 0 || !strings.Contains(out, "recorder ran: hook claude-code") || !strings.Contains(out, `"hook_event_name":"Stop"`) {
 				t.Fatalf("third hook: exit %d, stdout %q", code, out)
 			}
-			if n := d.srv.hits.Load(); n != downloads(sh) {
-				t.Fatalf("%d downloads, want %d", n, downloads(sh))
+			if n := d.srv.hits.Load(); n != 2 {
+				t.Fatalf("%d downloads, want 2: the hook's and one in the background", n)
 			}
 		})
 	}
@@ -313,7 +349,7 @@ func TestLauncherRefusesATamperedSlowDownload(t *testing.T) {
 	body, recEnv := recorderFor(t)
 	good := sha256.Sum256(body)
 	bad := append(bytes.Clone(body), 'x')
-	for _, sh := range launcherForms(t) {
+	for _, sh := range shForms(t) {
 		t.Run(label(sh), func(t *testing.T) {
 			t.Parallel()
 			d := newDownload(t, sh, bad, hex.EncodeToString(good[:]), recEnv)
@@ -333,7 +369,7 @@ func TestLauncherRefusesATamperedSlowDownload(t *testing.T) {
 			}
 			// The failure backs off as before: the next event doesn't download.
 			out, _, code, _ = d.run("{}", "hook", "cursor", "preToolUse")
-			if code != 0 || out != "{\"permission\":\"allow\"}\n" || d.srv.hits.Load() != int32(downloads(sh)) {
+			if code != 0 || out != "{\"permission\":\"allow\"}\n" || d.srv.hits.Load() != 2 {
 				t.Fatalf("after the failure: exit %d, stdout %q, %d downloads", code, out, d.srv.hits.Load())
 			}
 		})
@@ -347,7 +383,7 @@ func TestLauncherStartsOneBackgroundDownload(t *testing.T) {
 	}
 	t.Parallel()
 	body, recEnv := recorderFor(t)
-	for _, sh := range launcherForms(t)[:1] {
+	for _, sh := range shForms(t)[:1] {
 		d := newDownload(t, sh, body, "", recEnv)
 		var wg sync.WaitGroup
 		for i := 0; i < 2; i++ {
@@ -356,7 +392,7 @@ func TestLauncherStartsOneBackgroundDownload(t *testing.T) {
 				defer wg.Done()
 				out, errOut, code, took := d.run("{}", "hook", "claude-code")
 				t.Logf("hook: %v", took)
-				if code != 0 || out != "" || took > hookLimit+time.Second {
+				if code != 0 || out != "" || took > hookLimit {
 					t.Errorf("hook: exit %d after %v, stdout %q, stderr %q", code, took, out, errOut)
 				}
 			}()
@@ -395,4 +431,178 @@ func TestLauncherDownloadMarker(t *testing.T) {
 			os.Remove(mark) // launch.sh replaces a stale marker only when it starts a background download
 		})
 	}
+}
+
+// launch.ps1 starts no other process: it downloads in the hook until 7 s after it started, keeps
+// what arrived in a partial file, and resumes it with a Range request on the next event.
+
+func ps1(t *testing.T) {
+	if testing.Short() {
+		t.Skip("takes about 30 seconds")
+	}
+	if runtime.GOOS != "windows" {
+		t.Skip("launch.ps1 runs on Windows")
+	}
+	if _, err := exec.LookPath("powershell"); err != nil {
+		t.Skip("Windows PowerShell isn't installed")
+	}
+}
+
+func (d *download) partial() string {
+	return filepath.Join(d.cache, "sigdek.exe."+d.want[:16]+".partial")
+}
+
+func size(p string) int64 {
+	st, err := os.Stat(p)
+	if err != nil {
+		return -1
+	}
+	return st.Size()
+}
+
+// untilRecorded runs Claude Code events until one runs the recorder, checking that every event
+// stays within the hook limit and that each one before it adds to the partial file.
+func (d *download) untilRecorded(t *testing.T, max int) (events int) {
+	t.Helper()
+	before := size(d.partial())
+	for events = 1; events <= max; events++ {
+		out, errOut, code, took := d.run(`{"hook_event_name":"Stop"}`, "hook", "claude-code")
+		t.Logf("event: %v, partial %d bytes", took.Round(10*time.Millisecond), size(d.partial()))
+		if code != 0 || took > hookLimit {
+			t.Fatalf("event %d: exit %d after %v, stdout %q, stderr %q", events, code, took, out, errOut)
+		}
+		if strings.Contains(out, "recorder ran: hook claude-code") {
+			if !strings.Contains(out, `"hook_event_name":"Stop"`) {
+				t.Fatalf("the recorder didn't get the event: %q", out)
+			}
+			return events
+		}
+		if out != "" {
+			t.Fatalf("event %d printed %q", events, out)
+		}
+		if now := size(d.partial()); now <= before {
+			t.Fatalf("event %d added nothing: %d -> %d bytes", events, before, now)
+		} else {
+			before = now
+		}
+	}
+	t.Fatalf("the recorder didn't run in %d events", max)
+	return 0
+}
+
+func (d *download) checkCached(t *testing.T, body []byte) {
+	t.Helper()
+	if got, _ := os.ReadFile(d.bin); !bytes.Equal(got, body) {
+		t.Fatal("the cached recorder isn't the file served")
+	}
+	if fileExists(d.partial()) || fileExists(filepath.Join(d.cache, ".download-failed")) {
+		entries, _ := os.ReadDir(d.cache)
+		t.Fatalf("left behind: %v", entries)
+	}
+}
+
+func TestLaunchPs1ResumesASlowDownload(t *testing.T) {
+	ps1(t)
+	t.Parallel()
+	body, recEnv := recorderFor(t)
+	d := newDownload(t, "powershell", body, "", recEnv)
+
+	// First use: the hook stops within its limit, answers as usual and keeps what arrived.
+	out, errOut, code, took := d.run("{}", "hook", "cursor", "preToolUse")
+	t.Logf("first event: %v, partial %d of %d bytes", took.Round(10*time.Millisecond), size(d.partial()), len(body))
+	if code != 0 || out != "{\"permission\":\"allow\"}\n" || took > hookLimit {
+		t.Fatalf("first event: exit %d after %v, stdout %q, stderr %q", code, took, out, errOut)
+	}
+	if size(d.partial()) <= 0 || fileExists(d.bin) {
+		t.Fatalf("after the first event: partial %d bytes, cached %v", size(d.partial()), fileExists(d.bin))
+	}
+
+	// The next events add to it, and the one that completes it runs the recorder.
+	events := 1 + d.untilRecorded(t, 6)
+	t.Logf("the recorder ran in event %d", events)
+	d.checkCached(t, body)
+	ranges := d.srv.rangesSeen()
+	if len(ranges) != events || ranges[0] != "" {
+		t.Fatalf("requests' Range headers: %q", ranges)
+	}
+	for _, r := range ranges[1:] {
+		if !rangeHeader.MatchString(r) {
+			t.Fatalf("a later event asked for the whole file again: %q", ranges)
+		}
+	}
+}
+
+func TestLaunchPs1RefusesATamperedDownload(t *testing.T) {
+	ps1(t)
+	t.Parallel()
+	body, recEnv := recorderFor(t)
+	good := sha256.Sum256(body)
+	d := newDownload(t, "powershell", append(bytes.Clone(body), 'x'), hex.EncodeToString(good[:]), recEnv)
+	stamp := filepath.Join(d.cache, ".download-failed")
+	for i := 1; !fileExists(stamp); i++ {
+		if i > 6 {
+			t.Fatal("not refused in 6 events")
+		}
+		out, errOut, code, took := d.run("{}", "hook", "cursor", "preToolUse")
+		if code != 0 || out != "{\"permission\":\"allow\"}\n" || took > hookLimit {
+			t.Fatalf("event %d: exit %d after %v, stdout %q, stderr %q", i, code, took, out, errOut)
+		}
+	}
+	if fileExists(d.bin) || fileExists(d.partial()) {
+		t.Fatal("a recorder with the wrong checksum was kept")
+	}
+	if b, _ := os.ReadFile(stamp); strings.TrimSpace(string(b)) != "1 "+d.want {
+		t.Fatalf(".download-failed is %q", b)
+	}
+	// The failure backs off as before: the next event doesn't download.
+	hits := d.srv.hits.Load()
+	if out, _, code, _ := d.run("{}", "hook", "claude-code"); code != 0 || out != "" || d.srv.hits.Load() != hits {
+		t.Fatalf("after the refusal: exit %d, stdout %q, %d downloads", code, out, d.srv.hits.Load())
+	}
+}
+
+// A server (or proxy) that ignores Range sends the whole file again: launch.ps1 starts over.
+func TestLaunchPs1StartsOverWhenTheServerIgnoresRange(t *testing.T) {
+	ps1(t)
+	t.Parallel()
+	body, recEnv := recorderFor(t)
+	d := newDownload(t, "powershell", body, "", recEnv)
+	d.srv.ignoreRange.Store(true)
+	d.srv.rate.Store(int64(len(body) / 3)) // fits in one event
+	os.MkdirAll(d.cache, 0o755)
+	os.WriteFile(d.partial(), bytes.Repeat([]byte{'j'}, 1000), 0o644)
+	out, errOut, code, _ := d.run(`{"hook_event_name":"Stop"}`, "hook", "claude-code")
+	if code != 0 || !strings.Contains(out, "recorder ran: hook claude-code") {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
+	}
+	d.checkCached(t, body)
+	if r := d.srv.rangesSeen(); len(r) != 1 || r[0] != "bytes=1000-" {
+		t.Fatalf("requests' Range headers: %q", r)
+	}
+}
+
+// Two events at once: one appends, the other leaves it alone, and the file comes out whole.
+func TestLaunchPs1AppendsOneEventAtATime(t *testing.T) {
+	ps1(t)
+	t.Parallel()
+	body, recEnv := recorderFor(t)
+	d := newDownload(t, "powershell", body, "", recEnv)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			out, errOut, code, took := d.run("{}", "hook", "cursor", "preToolUse")
+			t.Logf("event at once: %v", took.Round(10*time.Millisecond))
+			if code != 0 || out != "{\"permission\":\"allow\"}\n" || took > hookLimit {
+				t.Errorf("exit %d after %v, stdout %q, stderr %q", code, took, out, errOut)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := d.srv.hits.Load(); n != 1 {
+		t.Fatalf("%d downloads at once, want 1", n)
+	}
+	d.untilRecorded(t, 6)
+	d.checkCached(t, body)
 }

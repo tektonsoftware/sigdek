@@ -121,11 +121,12 @@ failed() {
 }
 sha() { (sha256sum "$1" 2>/dev/null || shasum -a 256 "$1" 2>/dev/null || openssl dgst -sha256 -r "$1" 2>/dev/null) | awk '{print $1}' | head -n 1; }
 
-# A link too slow for the hook's 8 seconds: the download starts again in the background, with up
+# A link too slow for the hook's limit: the download starts again in the background, with up
 # to 5 minutes, and makes the same checks; the next event after it lands finds the recorder
 # above. It shares no stdin, stdout or stderr with the hook, so the agent doesn't wait for it,
 # and ignores the hangup signal, so it outlives the hook. Its failure counts like this one would.
-# One at a time: it holds .downloading (launch.ps1 too), which counts as stale after 6 minutes.
+# One at a time: it holds .downloading (launch.ps1 waits for it too), which counts as stale
+# after 6 minutes.
 later() {
   [ -e "$MARK" ] && [ -n "$(find "$MARK" -mmin +6 2>/dev/null)" ] && rm -f "$MARK"
   (set -C && : >"$MARK") 2>/dev/null || { rm -f "$TMP"; exit 0; }
@@ -144,9 +145,12 @@ later() {
 }
 
 # The agent waits at most 10 seconds for a hook; the download must finish well inside that.
+# On Windows, Git Bash's own process starts take up to 2 seconds of it.
 NAME="sigdek_${VERSION}_${OS}_${ARCH}${EXT}"
+SECS=8
+[ "$OS" = windows ] && SECS=6
 if command -v curl >/dev/null 2>&1; then
-  curl -fsSL --connect-timeout 2 --max-time 8 -o "$TMP" "$BASE/$NAME" 2>/dev/null || { [ $? = 28 ] && later; failed; }
+  curl -fsSL --connect-timeout 2 --max-time "$SECS" -o "$TMP" "$BASE/$NAME" 2>/dev/null || { [ $? = 28 ] && later; failed; }
 elif command -v wget >/dev/null 2>&1; then
   wget -q -T 8 -t 1 -O "$TMP" "$BASE/$NAME" 2>/dev/null || failed
 else
