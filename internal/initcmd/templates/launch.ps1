@@ -6,8 +6,6 @@ $started = [DateTime]::UtcNow
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue' # the progress bar makes Invoke-WebRequest far slower
 $hookArgs = $args
-# This launcher starts a hidden copy of itself with this argument to download the recorder.
-$background = $hookArgs.Count -eq 1 -and $hookArgs[0] -ceq 'download'
 $safe = $null
 if ($hookArgs.Count -ge 3 -and $hookArgs[0] -ceq 'hook' -and $hookArgs[1] -ceq 'cursor') {
   if (@('preToolUse', 'subagentStart', 'beforeShellExecution', 'beforeMCPExecution', 'beforeReadFile') -ccontains $hookArgs[2]) {
@@ -35,7 +33,7 @@ try {
   $buf = New-Object byte[] 65536
   $got = New-Object System.IO.MemoryStream
   $deadline = [DateTime]::UtcNow.AddSeconds(3)
-  while (-not $background -and $got.Length -lt 8MB) {
+  while ($got.Length -lt 8MB) {
     $read = $in.ReadAsync($buf, 0, $buf.Length)
     $left = [int][Math]::Max(0, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
     if (-not $read.Wait($left)) { break }
@@ -50,8 +48,7 @@ try {
     $stdin | & $env:SIGDEK_BIN @hookArgs
     exit 0
   }
-  $self = $MyInvocation.MyCommand.Path
-  $dir = Split-Path -Parent $self
+  $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
   $lock = @{}
   Get-Content -LiteralPath (Join-Path $dir 'recorder.lock') | ForEach-Object {
     if ($_ -match '^([a-z0-9_]+)=(.*)$') { $lock[$Matches[1]] = $Matches[2].Trim() }
@@ -64,7 +61,6 @@ try {
   if ($env:SIGDEK_CACHE) { $cache = $env:SIGDEK_CACHE }
   if ($env:CLAUDE_PLUGIN_DATA) { $cache = $env:CLAUDE_PLUGIN_DATA }
   $bin = Join-Path (Join-Path $cache $version) 'sigdek.exe'
-  $mark = Join-Path (Split-Path $bin) '.downloading'
   if (-not (Test-Path -LiteralPath $bin)) {
     $want = $lock["windows_$arch"]
     New-Item -ItemType Directory -Force -Path (Split-Path $bin) | Out-Null
@@ -86,9 +82,6 @@ try {
     }
     if (-not $lock['url']) { Exit-Safe }
 
-    # While a download carries on in the background (below), other events leave it be.
-    if (-not $background -and (Test-Path -LiteralPath $mark) -and ((Get-Date) - (Get-Item -LiteralPath $mark).LastWriteTime).TotalMinutes -lt 6) { Exit-Safe }
-
     # After a failed download, wait 1, 2, 4 ... up to 60 minutes before trying again; a new
     # checksum in recorder.lock retries at once.
     $stamp = Join-Path (Split-Path $bin) '.download-failed'
@@ -98,51 +91,96 @@ try {
       if ($last -match '^\s*(\d+)\s+(\S+)' -and $Matches[2] -eq $want) {
         $fails = [int]$Matches[1]
         $wait = [Math]::Min(60, [Math]::Pow(2, [Math]::Max(0, $fails - 1)))
-        if (-not $background -and ((Get-Date) - (Get-Item -LiteralPath $stamp).LastWriteTime).TotalMinutes -lt $wait) { Exit-Safe }
+        if (((Get-Date) - (Get-Item -LiteralPath $stamp).LastWriteTime).TotalMinutes -lt $wait) { Exit-Safe }
       }
     }
-    $tmp = "$bin.$PID.download"
+    # launch.sh (Git Bash) may be downloading the same recorder in the background; leave it be.
+    $mark = Join-Path (Split-Path $bin) '.downloading'
+    if ((Test-Path -LiteralPath $mark) -and ((Get-Date) - (Get-Item -LiteralPath $mark).LastWriteTime).TotalMinutes -lt 6) { Exit-Safe }
     # Windows PowerShell 5.1 may offer only TLS 1.0 and 1.1, which GitHub refuses; add 1.2.
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
-    if (-not $background) {
-      # The agent waits at most 10 seconds for a hook, and Invoke-WebRequest's -TimeoutSec doesn't
-      # limit the download itself. So a hidden copy of this launcher downloads, and the hook waits
-      # for it until 8 seconds after the hook started. On a slow link the copy carries on alone and
-      # makes the same checks; the next event after it lands finds the recorder. It shares no
-      # stdin, stdout or stderr with the hook, so the agent doesn't wait for it. One at a time: it
-      # holds .downloading (launch.sh's too), which counts as stale after 6 minutes.
-      try {
-        if ((Test-Path -LiteralPath $mark) -and ((Get-Date) - (Get-Item -LiteralPath $mark).LastWriteTime).TotalMinutes -ge 6) { Remove-Item -Force -LiteralPath $mark }
-        [IO.File]::Open($mark, 'CreateNew', 'Write').Close()
-      } catch { Exit-Safe }
-      $copy = $null
-      try {
-        $copy = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$self`"", 'download' -WindowStyle Hidden -PassThru
-      } catch {
-        Remove-Item -Force -LiteralPath $mark -ErrorAction SilentlyContinue # download here instead, as before
+
+    # The agent waits at most 10 seconds for a hook, and Invoke-WebRequest's -TimeoutSec doesn't
+    # limit the download itself. So the download stops 7 seconds after the hook started and keeps
+    # what arrived in a partial file; the next event asks for the rest (an HTTP Range request),
+    # and the event that completes it checks the SHA-256 and runs the recorder. One event appends
+    # at a time. A partial that hasn't grown for an hour, or is over 64 MB, is dropped. An event
+    # that adds to it doesn't count as a failed download; one that adds nothing does.
+    $folder = Split-Path $bin
+    Get-ChildItem -LiteralPath $folder -Filter '*.partial' -ErrorAction SilentlyContinue | Where-Object { ((Get-Date) - $_.LastWriteTime).TotalMinutes -ge 60 -or $_.Length -gt 64MB } | Remove-Item -Force -ErrorAction SilentlyContinue
+    $part = Join-Path $folder "sigdek.exe.$($want.Substring(0, 16)).partial"
+    try { $file = [IO.File]::Open($part, 'OpenOrCreate', 'ReadWrite', 'None') } catch { Exit-Safe } # another event is appending
+    $until = $started.AddSeconds(7)
+    $code = 0; $added = 0; $done = $false; $restart = $false; $bad = $false; $ok = $false
+    $request = $null; $response = $null
+    try {
+      $have = $file.Length
+      $request = [Net.WebRequest]::Create("$($lock['url'])/sigdek_${version}_windows_$arch.exe")
+      $request.UserAgent = 'SigDek launcher'
+      if ($have -gt 0) { $request.AddRange([long]$have) }
+      $answer = $request.GetResponseAsync()
+      try { $null = $answer.Wait([int][Math]::Max(0, ($until - [DateTime]::UtcNow).TotalMilliseconds)) } catch {}
+      if ($answer.Status -eq 'RanToCompletion') {
+        $response = $answer.Result
+        $code = [int]$response.StatusCode
+        $total = -1
+        if ($code -eq 206 -and $response.Headers['Content-Range'] -match '^bytes (\d+)-\d+/(\d+)$' -and [long]$Matches[1] -eq $have) {
+          $total = [long]$Matches[2]
+        } elseif ($code -eq 200) {
+          $file.SetLength(0) # the whole file: start over
+          $total = $response.ContentLength
+        } else {
+          $restart = $true
+        }
+        if (-not $restart) {
+          $null = $file.Seek(0, 'End')
+          $body = $response.GetResponseStream()
+          $chunk = New-Object byte[] 65536
+          while ($true) {
+            $ms = [int]($until - [DateTime]::UtcNow).TotalMilliseconds
+            if ($ms -le 0) { break }
+            $next = $body.ReadAsync($chunk, 0, $chunk.Length)
+            try { $null = $next.Wait($ms) } catch {}
+            if ($next.Status -ne 'RanToCompletion') { break }
+            if ($next.Result -le 0) { $done = $total -lt 0 -or $file.Length -eq $total; break }
+            $file.Write($chunk, 0, $next.Result)
+            $added += $next.Result
+            if ($file.Length -gt 64MB) { $bad = $true; break }
+            if ($total -ge 0 -and $file.Length -ge $total) { $done = $file.Length -eq $total; $restart = -not $done; break }
+          }
+          $file.Flush()
+        }
+      } elseif ($answer.IsFaulted) {
+        $e = $answer.Exception.InnerException
+        if ($e -is [Net.WebException] -and $e.Response) { $code = [int]$e.Response.StatusCode }
+        # 416: nothing left to send, so the partial may be complete (another event's last chunk).
+        if ($code -eq 416) { $done = $true }
       }
-      if ($copy) {
-        $null = $copy.WaitForExit([int][Math]::Max(0, 8000 - ([DateTime]::UtcNow - $started).TotalMilliseconds))
-        if (-not (Test-Path -LiteralPath $bin)) { Exit-Safe }
+      if ($done -and -not $bad) {
+        $file.Position = 0
+        $sha = [Security.Cryptography.SHA256]::Create()
+        $sum = -join ($sha.ComputeHash($file) | ForEach-Object { $_.ToString('x2') })
+        if ($sum -eq $want) { $ok = $true } elseif ($code -eq 416) { $restart = $true } else { $bad = $true }
       }
+      if ($restart) { $file.SetLength(0) }
+    } catch {
+    } finally {
+      # Abort first: closing a response with body left to read can wait for the rest.
+      if ($request -and -not $done) { try { $request.Abort() } catch {} }
+      if ($response) { try { $response.Close() } catch {} }
+      $file.Close()
     }
-    if (-not (Test-Path -LiteralPath $bin)) {
-      try {
-        Invoke-WebRequest -UseBasicParsing -TimeoutSec 8 -Uri "$($lock['url'])/sigdek_${version}_windows_$arch.exe" -OutFile $tmp
-        $sum = (Get-FileHash -Algorithm SHA256 -LiteralPath $tmp).Hash.ToLower()
-        if ($sum -ne $want) { throw "checksum mismatch" }
-        Move-Item -Force -LiteralPath $tmp -Destination $bin
-        Remove-Item -Force -LiteralPath $stamp -ErrorAction SilentlyContinue
-      } catch {
-        Remove-Item -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
-        try { Set-Content -LiteralPath $stamp -Value "$($fails + 1) $want" } catch {}
-        if (-not $background) { Exit-Safe }
-      }
+    if ($ok) {
+      try { Move-Item -Force -LiteralPath $part -Destination $bin } catch { Exit-Safe }
+      Remove-Item -Force -LiteralPath $stamp -ErrorAction SilentlyContinue
+    } elseif ($bad -or ($added -eq 0 -and -not $restart)) {
+      if ($bad) { Remove-Item -Force -LiteralPath $part -ErrorAction SilentlyContinue }
+      try { Set-Content -LiteralPath $stamp -Value "$($fails + 1) $want" } catch {}
+      Exit-Safe
+    } else {
+      Remove-Item -Force -LiteralPath $stamp -ErrorAction SilentlyContinue # it's coming, slowly
+      Exit-Safe
     }
-  }
-  if ($background) {
-    Remove-Item -Force -LiteralPath $mark -ErrorAction SilentlyContinue
-    exit 0
   }
   $stdin | & $bin @hookArgs
   exit 0
