@@ -6,7 +6,7 @@
 #   ART   the rehearsal-build artifact: dist/<v>/, npm-tgz/<v>/, tap.bundle
 #   WORK  an empty scratch folder; results go to $WORK/out
 # Optional:
-#   SECTIONS     which parts to run (default: npm repo plugin brew upgrade)
+#   SECTIONS     which parts to run (default: npm repo plugin brew upgrade slow)
 #   SKIP_SERVERS 1 when the servers already run (Windows starts them from PowerShell)
 #   REPO         a repository already set up with `sigdek init` (when SECTIONS has no npm)
 #   BREW_UPDATE  full: `brew update` for the upgrade; tap (default): fetch only this tap
@@ -23,10 +23,15 @@ V2=${V2:-0.0.100}
 PORT=8765
 BAD_PORT=8766
 REG_PORT=4873
+SLOW_PORT=8767
+SLOW_BAD_PORT=8768
+SLOW_RATE=${SLOW_RATE:-250000} # bytes a second (2 Mbit/s): a 7 MB recorder takes about 28 s
 BASE=http://127.0.0.1:$PORT
 BAD=http://127.0.0.1:$BAD_PORT
 REG=http://127.0.0.1:$REG_PORT/
-SECTIONS=" ${SECTIONS:-npm repo plugin brew upgrade} "
+SLOW=http://127.0.0.1:$SLOW_PORT
+SLOW_BAD=http://127.0.0.1:$SLOW_BAD_PORT
+SECTIONS=" ${SECTIONS:-npm repo plugin brew upgrade slow} "
 OUT=$WORK/out
 mkdir -p "$WORK" "$OUT"
 WORK=$(cd "$WORK" && pwd)
@@ -142,6 +147,11 @@ if [ "${SKIP_SERVERS:-0}" != 1 ]; then
   "$PY" -m http.server "$PORT" --bind 127.0.0.1 --directory "$WORK/srv" >"$OUT/http.log" 2>&1 &
   PIDS+=($!)
   "$PY" -m http.server "$BAD_PORT" --bind 127.0.0.1 --directory "$WORK/srv-bad" >"$OUT/http-bad.log" 2>&1 &
+  PIDS+=($!)
+  # The same two, at SLOW_RATE: a link too slow for the hook's 8-second download.
+  "$PY" "$SCRIPT_DIR/throttle.py" "$SLOW_PORT" "$WORK/srv" "$SLOW_RATE" >"$OUT/http-slow.log" 2>&1 &
+  PIDS+=($!)
+  "$PY" "$SCRIPT_DIR/throttle.py" "$SLOW_BAD_PORT" "$WORK/srv-bad" "$SLOW_RATE" >"$OUT/http-slow-bad.log" 2>&1 &
   PIDS+=($!)
   echo "${PIDS[*]}" >"$WORK/server-pids"
   for i in $(seq 1 50); do curl -fsS "$BASE/v$V1/checksums.txt" >/dev/null 2>&1 && break; sleep 0.2; done
@@ -501,6 +511,95 @@ if has upgrade; then
        fail "upgrade: plugin pinned to $V2" "records=$HOOK_NEW data=$(ls "$WORK/plugin-data-up" 2>&1 | tr '\n' ' ')"
      fi)
   fi
+fi
+
+# ---------------------------------------------------------------------------------------------
+if has slow; then
+  NAME=sigdek_${V1}_${OSN}_${ARCHN}${EXE}
+  SIZE=$(wc -c <"$WORK/srv/v$V1/$NAME" | tr -d ' ')
+  log "== Slow link: the plugin launchers' first download at $SLOW_RATE bytes a second ($NAME, $SIZE bytes: about $((SIZE / SLOW_RATE)) s; the hook allows 8 s)"
+  for i in $(seq 1 50); do curl -fsS -o /dev/null "$SLOW/v$V1/checksums.txt" 2>/dev/null && break; sleep 0.2; done
+  SP=$WORK/slow-plugins SD=$WORK/slow-data
+  rm -rf "$SP" "$SD" "$WORK/slow-plain" && mkdir -p "$SP" "$WORK/slow-plain" && git -C "$WORK/slow-plain" init -q
+  cp -R "$WORK/tap-v1/plugins/claude-code" "$WORK/tap-v1/plugins/cursor" "$SP/"
+  for p in claude-code cursor; do sed "s#^url=$BASE#url=$SLOW#" "$WORK/tap-v1/plugins/$p/scripts/recorder.lock" >"$SP/$p/scripts/recorder.lock"; done
+  mkdir -p "$SP/bad" && cp -R "$WORK/tap-v1/plugins/claude-code" "$SP/bad/"
+  sed "s#^url=$BASE#url=$SLOW_BAD#" "$WORK/tap-v1/plugins/claude-code/scripts/recorder.lock" >"$SP/bad/claude-code/scripts/recorder.lock"
+  grep -q "^later()" "$SP/claude-code/scripts/launch.sh" && log "  the pinned plugin's launch.sh has the background download" || fail "slow: setup" "the pinned plugins' launch.sh has no background download"
+  cd "$WORK/slow-plain" || exit 1
+  P=$(npath "$WORK/slow-plain")
+  export CLAUDE_PROJECT_DIR=$P CURSOR_PROJECT_DIR=$P
+  CC='sh "${CLAUDE_PLUGIN_ROOT}/scripts/launch.sh" hook claude-code; exit 0'
+  gets() { grep -c "GET /v$V1/$NAME HTTP" "$OUT/$1" 2>/dev/null; }
+  landed() { [ -f "$1/sigdek$EXE" ] && [ ! -e "$1/.downloading" ]; }
+  settled() { [ ! -e "$1/.downloading" ] && [ -z "$(ls "$1" 2>/dev/null | grep '\.download$')" ]; }
+  base=$(gets http-slow.log) # on Windows, launch.ps1's slow checks used the same server
+
+  # Claude Code, cache in CLAUDE_PLUGIN_DATA.
+  CCD=$SD/claude-code/$V1 HCC=$(fresh_home slow-cc)
+  CLAUDE_PLUGIN_ROOT=$(npath "$SP/claude-code") CLAUDE_PLUGIN_DATA=$(npath "$SD/claude-code") run_hook "slow claude-code first use" "$HCC" "$(cc_start "$P")" "$CC"
+  T_CC=$(now_ms)
+  if [ $HOOK_STATUS -eq 0 ] && [ $HOOK_NEW -eq 0 ] && [ -z "$HOOK_OUT" ] && [ $HOOK_MS -lt 9500 ] && [ ! -e "$CCD/sigdek$EXE" ] && [ -e "$CCD/.downloading" ]; then
+    pass "slow: Claude Code launcher, first use" "exit 0 in ${HOOK_MS} ms, nothing printed, 0 records; download handed to the background"
+  else
+    fail "slow: Claude Code launcher, first use" "exit=$HOOK_STATUS ms=$HOOK_MS records=$HOOK_NEW out=$HOOK_OUT cache=$(ls -a "$CCD" 2>&1 | tr '\n' ' ')"
+  fi
+  CLAUDE_PLUGIN_ROOT=$(npath "$SP/claude-code") CLAUDE_PLUGIN_DATA=$(npath "$SD/claude-code") run_hook "slow claude-code during the download" "$HCC" "$(cc_post "$P")" "$CC"
+  if [ $HOOK_STATUS -eq 0 ] && [ $HOOK_NEW -eq 0 ] && [ -z "$HOOK_OUT" ] && [ $HOOK_MS -lt 2000 ] && [ ! -e "$CCD/sigdek$EXE" ]; then
+    pass "slow: Claude Code launcher, an event during the download" "exit 0 in ${HOOK_MS} ms, 0 records, no second download"
+  else
+    fail "slow: Claude Code launcher, an event during the download" "exit=$HOOK_STATUS ms=$HOOK_MS records=$HOOK_NEW out=$HOOK_OUT"
+  fi
+
+  # Cursor, through its `| grep` hook command, cache in SIGDEK_HOME/bin.
+  HCU=$(fresh_home slow-cursor)
+  CURSOR_PLUGIN_ROOT=$(npath "$SP/cursor") run_hook "slow cursor first use" "$HCU" "$(cur_ev preToolUse "$P")" "sh \"\${CURSOR_PLUGIN_ROOT}/scripts/launch.sh\" hook cursor preToolUse | grep '^{' || echo '{\"permission\":\"allow\"}'"
+  T_CU=$(now_ms)
+  if [ $HOOK_STATUS -eq 0 ] && [ "$HOOK_OUT" = '{"permission":"allow"}' ] && [ $HOOK_NEW -eq 0 ] && [ $HOOK_MS -lt 9500 ]; then
+    pass "slow: Cursor launcher, first use" "exit 0 in ${HOOK_MS} ms, answer $HOOK_OUT through grep, 0 records"
+  else
+    fail "slow: Cursor launcher, first use" "exit=$HOOK_STATUS ms=$HOOK_MS out=$HOOK_OUT records=$HOOK_NEW"
+  fi
+
+  # Tampered, on the slow server: the background download is refused too.
+  HBAD=$(fresh_home slow-bad)
+  CLAUDE_PLUGIN_ROOT=$(npath "$SP/bad/claude-code") run_hook "slow tampered claude-code" "$HBAD" "$(cc_start "$P")" "$CC"
+  BAD_MS=$HOOK_MS BAD_ST=$HOOK_STATUS BAD_OUT=$HOOK_OUT
+
+  # Wait for all three (up to 5 minutes, the background limit).
+  CC_LAND= CU_LAND=
+  for i in $(seq 1 600); do
+    [ -z "$CC_LAND" ] && landed "$CCD" && CC_LAND=$(($(now_ms) - T_CC))
+    [ -z "$CU_LAND" ] && landed "$HCU/bin/$V1" && CU_LAND=$(($(now_ms) - T_CU))
+    [ -n "$CC_LAND" ] && [ -n "$CU_LAND" ] && settled "$HBAD/bin/$V1" && break
+    sleep 0.5
+  done
+  log "  landed: Claude Code ${CC_LAND:-never} ms, Cursor ${CU_LAND:-never} ms after their first hooks returned"
+  ls -la "$CCD" "$HCU/bin/$V1" "$HBAD/bin/$V1" >>"$LOG" 2>&1
+  n=$(($(gets http-slow.log) - base))
+  if [ -n "$CC_LAND" ] && [ -n "$CU_LAND" ] && [ ! -e "$CCD/.download-failed" ] && [ "$n" = 4 ]; then
+    pass "slow: the background downloads land" "Claude Code ${CC_LAND} ms and Cursor ${CU_LAND} ms after the first hook returned; $n requests (each hook's and one in the background); no .download-failed"
+  else
+    fail "slow: the background downloads land" "cc=${CC_LAND:-never} cursor=${CU_LAND:-never} requests=$n cache=$(ls -a "$CCD" 2>&1 | tr '\n' ' ')"
+  fi
+  CLAUDE_PLUGIN_ROOT=$(npath "$SP/claude-code") CLAUDE_PLUGIN_DATA=$(npath "$SD/claude-code") run_hook "slow claude-code next event" "$HCC" "$(cc_post "$P")" "$CC"
+  if [ $HOOK_STATUS -eq 0 ] && [ $HOOK_NEW -eq 1 ] && [ -z "$HOOK_OUT" ]; then pass "slow: Claude Code, the next event records" "exit 0, 1 record; ${HOOK_MS} ms"; else fail "slow: Claude Code, the next event records" "exit=$HOOK_STATUS records=$HOOK_NEW out=$HOOK_OUT"; fi
+  CURSOR_PLUGIN_ROOT=$(npath "$SP/cursor") run_hook "slow cursor next event" "$HCU" "$(cur_ev sessionStart "$P")" "sh \"\${CURSOR_PLUGIN_ROOT}/scripts/launch.sh\" hook cursor sessionStart | grep '^{' || echo '{}'"
+  if [ $HOOK_STATUS -eq 0 ] && [ "$HOOK_OUT" = '{}' ] && [ $HOOK_NEW -eq 1 ]; then pass "slow: Cursor, the next event records" "exit 0, answer {}, 1 record; ${HOOK_MS} ms"; else fail "slow: Cursor, the next event records" "exit=$HOOK_STATUS out=$HOOK_OUT records=$HOOK_NEW"; fi
+  out=$(SIGDEK_HOME=$HCC "$CCD/sigdek$EXE" verify 2>&1) && pass "slow: sigdek verify on those records" "$(printf '%s' "$out" | head -n 1)" || fail "slow: sigdek verify" "$out"
+
+  stamp=$(cat "$HBAD/bin/$V1/.download-failed" 2>/dev/null)
+  want=$(awk -v n="$NAME" '$2==n {print $1}' "$ART/dist/$V1/checksums.txt")
+  nb=$(gets http-slow-bad.log)
+  if [ "$BAD_ST" -eq 0 ] && [ -z "$BAD_OUT" ] && [ "$BAD_MS" -lt 9500 ] && [ ! -e "$HBAD/bin/$V1/sigdek$EXE" ] && [ "$stamp" = "1 $want" ] && [ "$(records "$HBAD")" = 0 ] && settled "$HBAD/bin/$V1"; then
+    pass "slow: tampered binary refused by the background download" "hook exit 0 in ${BAD_MS} ms; $nb requests; nothing cached, no temporary file, 0 records; .download-failed: 1 ${want:0:12}..."
+  else
+    fail "slow: tampered binary refused by the background download" "exit=$BAD_ST ms=$BAD_MS out=$BAD_OUT stamp=$stamp requests=$nb cache=$(ls -a "$HBAD/bin/$V1" 2>&1 | tr '\n' ' ')"
+  fi
+  CLAUDE_PLUGIN_ROOT=$(npath "$SP/bad/claude-code") run_hook "slow tampered, next event" "$HBAD" "$(cc_post "$P")" "$CC"
+  if [ $HOOK_STATUS -eq 0 ] && [ "$(gets http-slow-bad.log)" = "$nb" ]; then pass "slow: after the refused download, the next event backs off" "exit 0 in ${HOOK_MS} ms, no request"; else fail "slow: back-off after the refused download" "exit=$HOOK_STATUS requests=$(gets http-slow-bad.log)"; fi
+  grep -E "went away|sent all" "$OUT/http-slow.log" "$OUT/http-slow-bad.log" | sed 's/^/  /' >>"$LOG"
+  unset CLAUDE_PROJECT_DIR CURSOR_PROJECT_DIR
 fi
 
 log "== Done on $LABEL"

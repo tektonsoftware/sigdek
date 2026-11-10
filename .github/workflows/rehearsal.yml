@@ -88,7 +88,9 @@ jobs:
       - name: Pin (release.yml's step without the push), for two versions, then the local base
         run: |
           git checkout --detach # a tag build starts on a detached HEAD
-          git fetch origin main && git checkout main
+          # Rehearsal only: release.yml checks out main; here, main as it would be with this
+          # branch's launchers merged (the rehearsal commit itself), so the pinned plugins carry them.
+          git checkout -B main
           git config user.name "sigdek-release"
           git config user.email "hello@sigdek.com"
           for v in "$V1" "$V2"; do
@@ -157,7 +159,7 @@ jobs:
           ART: ${{ github.workspace }}/art
           WORK: ${{ runner.temp }}/rr
           LABEL: macos-runner
-          SECTIONS: brew upgrade
+          SECTIONS: brew upgrade slow
           BREW_UPDATE: full
         run: bash rehearsal/test-unix.sh
       - if: always()
@@ -182,7 +184,7 @@ jobs:
           ART: ${{ github.workspace }}/art
           WORK: ${{ runner.temp }}/rr
           LABEL: macos-intel
-          SECTIONS: plugin
+          SECTIONS: plugin slow
         run: bash rehearsal/test-unix.sh
       - if: always()
         uses: actions/upload-artifact@v4
