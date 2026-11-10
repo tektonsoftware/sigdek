@@ -92,6 +92,10 @@ fi
 [ -n "$BASE" ] || exit 0
 mkdir -p "$CACHE/$VERSION" 2>/dev/null || exit 0
 
+# While a download carries on in the background (see later, below), other events leave it be.
+MARK="$CACHE/$VERSION/.downloading"
+[ -n "$(find "$MARK" -mmin -7 2>/dev/null)" ] && exit 0
+
 # After a failed download, wait 1, 2, 4 ... up to 60 minutes before trying again, so a machine
 # that can't reach the release doesn't spend every event on the network. A new checksum in
 # recorder.lock retries at once.
@@ -115,18 +119,44 @@ failed() {
   echo "$((FAILS + 1)) $WANT" >"$STAMP" 2>/dev/null
   exit 0
 }
+sha() { (sha256sum "$1" 2>/dev/null || shasum -a 256 "$1" 2>/dev/null || openssl dgst -sha256 -r "$1" 2>/dev/null) | awk '{print $1}' | head -n 1; }
+
+# A link too slow for the hook's limit: the download starts again in the background, with up
+# to 5 minutes, and makes the same checks; the next event after it lands finds the recorder
+# above. It shares no stdin, stdout or stderr with the hook, so the agent doesn't wait for it,
+# and ignores the hangup signal, so it outlives the hook. Its failure counts like this one would.
+# One at a time: it holds .downloading (launch.ps1 waits for it too), which counts as stale
+# after 6 minutes.
+later() {
+  [ -e "$MARK" ] && [ -n "$(find "$MARK" -mmin +6 2>/dev/null)" ] && rm -f "$MARK"
+  (set -C && : >"$MARK") 2>/dev/null || { rm -f "$TMP"; exit 0; }
+  (
+    trap '' HUP
+    if curl -fsSL --connect-timeout 10 --max-time 300 -o "$TMP" "$BASE/$NAME" && [ "$(sha "$TMP")" = "$WANT" ] &&
+      chmod +x "$TMP" && mv -f "$TMP" "$BIN"; then
+      rm -f "$STAMP"
+    else
+      rm -f "$TMP"
+      echo "$((FAILS + 1)) $WANT" >"$STAMP"
+    fi
+    rm -f "$MARK"
+  ) </dev/null >/dev/null 2>&1 &
+  exit 0
+}
 
 # The agent waits at most 10 seconds for a hook; the download must finish well inside that.
+# On Windows, Git Bash's own process starts take up to 2 seconds of it.
 NAME="sigdek_${VERSION}_${OS}_${ARCH}${EXT}"
+SECS=8
+[ "$OS" = windows ] && SECS=6
 if command -v curl >/dev/null 2>&1; then
-  curl -fsSL --connect-timeout 2 --max-time 8 -o "$TMP" "$BASE/$NAME" 2>/dev/null || failed
+  curl -fsSL --connect-timeout 2 --max-time "$SECS" -o "$TMP" "$BASE/$NAME" 2>/dev/null || { [ $? = 28 ] && later; failed; }
 elif command -v wget >/dev/null 2>&1; then
   wget -q -T 8 -t 1 -O "$TMP" "$BASE/$NAME" 2>/dev/null || failed
 else
   failed
 fi
-GOT=$( (sha256sum "$TMP" 2>/dev/null || shasum -a 256 "$TMP" 2>/dev/null || openssl dgst -sha256 -r "$TMP" 2>/dev/null) | awk '{print $1}' | head -n 1)
-[ "$GOT" = "$WANT" ] || failed
+[ "$(sha "$TMP")" = "$WANT" ] || failed
 chmod +x "$TMP" 2>/dev/null && mv -f "$TMP" "$BIN" 2>/dev/null || failed
 rm -f "$STAMP"
 exec "$BIN" "$@"

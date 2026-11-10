@@ -287,12 +287,12 @@ func TestLauncherBacksOffAfterAFailedDownload(t *testing.T) {
 			t.Fatalf("%s: the wait should grow: %d requests", sh, hits)
 		}
 	}
-	for _, flag := range []string{"--connect-timeout 2 --max-time 8", "wget -q -T 8 -t 1"} {
+	for _, flag := range []string{`--connect-timeout 2 --max-time "$SECS"`, "SECS=8\n", `[ "$OS" = windows ] && SECS=6`, "wget -q -T 8 -t 1"} {
 		if !strings.Contains(string(launchSh), flag) {
 			t.Errorf("launch.sh lost %q; the download must fit inside the 10 s hook timeout", flag)
 		}
 	}
-	for _, want := range []string{"-TimeoutSec 8", "$ProgressPreference = 'SilentlyContinue'", "[Console]::InputEncoding", "ReadAsync", ".download-failed"} {
+	for _, want := range []string{"$started.AddSeconds(7)", "$ProgressPreference = 'SilentlyContinue'", "[Console]::InputEncoding", "ReadAsync", ".download-failed"} {
 		if !strings.Contains(string(launchPs1), want) {
 			t.Errorf("launch.ps1 lost %q", want)
 		}
