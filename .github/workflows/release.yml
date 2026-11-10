@@ -16,6 +16,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Stop if the repository is still private
+        if: github.event.repository.private
+        run: |
+          echo "::error::tektonsoftware/sigdek is still private, so nobody could download this release, and npm would publish it without provenance for good. Make the repository public, then delete this tag and push it again (a re-run keeps the private flag of the original push)."
+          exit 1
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
