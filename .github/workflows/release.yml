@@ -37,9 +37,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "SigDek recorder $GITHUB_REF_NAME" \
-            --notes "Binaries for macOS, Linux and Windows on x64 and arm64. Check them against checksums.txt, or let the launcher do it."
+          # A re-run (after a later step failed) keeps the release that's already out and uses its
+          # files from here on, so npm, the plugins and the manifests pin exactly those bytes.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::notice::$GITHUB_REF_NAME is already released; using its files."
+            rm -rf dist && gh release download "$GITHUB_REF_NAME" --dir dist
+            (cd dist && sha256sum --check checksums.txt)
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --title "SigDek recorder $GITHUB_REF_NAME" \
+              --notes "Binaries for macOS, Linux and Windows on x64 and arm64. Check them against checksums.txt, or let the launcher do it."
+          fi
       - name: Build the npm packages
         run: node scripts/npm-packages.mjs "${GITHUB_REF_NAME#v}" dist npm-out
       - uses: actions/setup-node@v4
@@ -58,9 +66,19 @@ jobs:
           flags="--access public"
           [ "$PRIVATE" = "true" ] || flags="$flags --provenance"
           [ -n "$NODE_AUTH_TOKEN" ] || echo "No NPM_TOKEN: publishing through trusted publishing."
+          # A re-run skips each package this version already published.
+          version=${GITHUB_REF_NAME#v}
+          publish() {
+            name=$(node -p "require('./$1/package.json').name")
+            if [ "$(npm view "$name@$version" version 2>/dev/null)" = "$version" ]; then
+              echo "$name@$version is already on npm."
+            else
+              (cd "$1" && npm publish $flags)
+            fi
+          }
           # Platform packages first, so the launcher never points at a version that isn't there.
-          for d in npm-out/sigdek-*; do (cd "$d" && npm publish $flags); done
-          (cd npm-out/sigdek && npm publish $flags)
+          for d in npm-out/sigdek-*; do publish "$d"; done
+          publish npm-out/sigdek
       - name: Pin the plugins to this release
         run: |
           version=${GITHUB_REF_NAME#v}
@@ -70,8 +88,13 @@ jobs:
           git config user.name "sigdek-release"
           git config user.email "hello@sigdek.com"
           git add plugins/ Formula/ bucket/
-          git commit -m "release: pin plugins, Homebrew and Scoop to v$version"
-          git push origin main
+          # On a re-run, main may already be pinned to this version.
+          if git diff --cached --quiet; then
+            echo "main is already pinned to v$version."
+          else
+            git commit -m "release: pin plugins, Homebrew and Scoop to v$version"
+            git push origin main
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: winget-manifests
