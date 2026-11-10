@@ -192,7 +192,8 @@ function SlowCopy([string]$to, [string]$url) {
   Copy-Item "$REPOPS\.sigdek\*" $to
   (Get-Content "$REPOPS\.sigdek\recorder.lock") -replace "^url=$([regex]::Escape($BASE))", "url=$url" | Set-Content "$to\recorder.lock"
 }
-function Gets([string]$log) { @(Select-String -Path "$OUT\$log" -Pattern "GET /v$V1/$name HTTP" -ErrorAction SilentlyContinue).Count }
+# Get-Content, not Select-String: the server holds the log open for writing, which Select-String can't share.
+function Gets([string]$log) { @(Get-Content -LiteralPath "$OUT\$log" -ErrorAction SilentlyContinue | Where-Object { $_ -like "*GET /v$V1/$name HTTP*" }).Count }
 function Hook([string]$launcher, [string]$ev) {
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $o = Join ((CurEv $ev $REPOPS) | powershell -NoProfile -ExecutionPolicy Bypass -File $launcher hook cursor $ev 2>&1)
