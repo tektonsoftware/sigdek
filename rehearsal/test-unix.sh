@@ -14,6 +14,7 @@
 #
 # Nothing here signs in, and every record stays in a temporary SIGDEK_HOME.
 set -u
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 ART=${ART:?set ART to the rehearsal-build artifact}
 WORK=${WORK:?set WORK to an empty scratch folder}
@@ -114,8 +115,11 @@ cleanup() {
   for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done
   if [ "${TAPPED:-0}" = 1 ] && [ "${BREW_CLEANUP:-1}" = 1 ]; then
     brew uninstall --force sigdek >>"$LOG" 2>&1
-    [ "${TRUSTED:-0}" = 1 ] && brew untrust --formula tektonsoftware/sigdek/sigdek >>"$LOG" 2>&1
+    brew untrust --formula tektonsoftware/sigdek/sigdek >>"$LOG" 2>&1
     brew untap tektonsoftware/sigdek >>"$LOG" 2>&1 && log "brew: untapped tektonsoftware/sigdek"
+    # `brew test` and `brew audit` turn on Homebrew's developer mode; leave it as it was.
+    [ "${BREW_DEV_WAS:-}" = off ] && brew developer off >>"$LOG" 2>&1
+    rm -f "$(brew --cache)"/downloads/*--sigdek_* "$(brew --cache)"/sigdek--* 2>/dev/null
   fi
 }
 trap cleanup EXIT
@@ -390,29 +394,34 @@ if has brew; then
   else
     log "== Homebrew ($("$BREW" --version | head -n 1))"
     eval "$("$BREW" shellenv)"
-    export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1
+    export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_COLOR=1
     brew untap tektonsoftware/sigdek >/dev/null 2>&1
+    case "$(brew developer 2>&1 | head -n 1)" in *disabled*) BREW_DEV_WAS=off ;; *) BREW_DEV_WAS=on ;; esac
     out=$(brew tap tektonsoftware/sigdek "$WORK/sigdek.git" 2>&1)
     st=$?
     log "  brew tap tektonsoftware/sigdek $WORK/sigdek.git -> exit=$st: $(printf '%s' "$out" | tr '\n' ' ')"
     if [ $st -eq 0 ]; then
       TAPPED=1
       pass "brew: tap from a repository not named homebrew-*" "brew tap tektonsoftware/sigdek <path>/sigdek.git: $(printf '%s' "$out" | tail -n 1)"
-      # The documented command (README and site): brew install sigdek
-      out=$(brew install sigdek 2>&1)
+      # The install command exactly as README.md's Homebrew row documents it.
+      DOC=${DOC_README:-$SCRIPT_DIR/../README.md}
+      doc_cmd=$(grep '^| macOS or Linux, Homebrew' "$DOC" | grep -o '`brew install [^`]*`' | head -n 1 | tr -d '`')
+      log "  README ($DOC) documents: $doc_cmd"
+      [ -n "$doc_cmd" ] || { fail "brew: README's install command" "not found in $DOC"; doc_cmd="brew install sigdek"; }
+      out=$($doc_cmd 2>&1)
       st=$?
-      log "  brew install sigdek -> exit=$st"; printf '%s\n' "$out" | sed 's/^/    /' >>"$LOG"
+      log "  $doc_cmd -> exit=$st"; printf '%s\n' "$out" | sed 's/^/    /' >>"$LOG"
       if [ $st -eq 0 ]; then
-        pass "brew: brew install sigdek (as documented)" "$(printf '%s' "$out" | grep -E 'Summary|Cellar/sigdek' | tail -n 1)"
+        pass "brew: $doc_cmd (as README documents)" "$(printf '%s' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -E 'Trusted|Cellar/sigdek' | tr '\n' ' ')"
       else
-        fail "brew: brew install sigdek (as documented)" "exit=$st: $(printf '%s' "$out" | grep -E 'Error' | head -n 2 | tr '\n' ' ')"
+        fail "brew: $doc_cmd (as README documents)" "exit=$st: $(printf '%s' "$out" | sed 's/\x1b\[[0-9;]*m//g; s/%0A/ /g' | grep -iE 'error' | head -n 2 | tr '\n' ' ')"
         # The fully qualified name trusts this one formula and installs it.
         out=$(brew install tektonsoftware/sigdek/sigdek 2>&1)
         st=$?
         log "  brew install tektonsoftware/sigdek/sigdek -> exit=$st"; printf '%s\n' "$out" | sed 's/^/    /' >>"$LOG"
         if [ $st -eq 0 ]; then
           TRUSTED=1
-          pass "brew: brew install tektonsoftware/sigdek/sigdek" "$(printf '%s' "$out" | grep -E 'Trusted|Cellar/sigdek' | tr '\n' ' ')"
+          pass "brew: brew install tektonsoftware/sigdek/sigdek" "$(printf '%s' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -E 'Trusted|Cellar/sigdek' | tr '\n' ' ')"
         else
           fail "brew: brew install tektonsoftware/sigdek/sigdek" "exit=$st: $(printf '%s' "$out" | tail -n 3 | tr '\n' ' ')"
         fi

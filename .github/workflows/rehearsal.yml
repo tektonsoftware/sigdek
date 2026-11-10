@@ -49,6 +49,14 @@ jobs:
             (cd "dist/$version" && sha256sum sigdek_* > checksums.txt && cat checksums.txt)
           done
           go version > logs/go-version.txt
+          cat logs/go-version.txt
+      - name: govulncheck on the built binaries
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          for v in "$V1"; do
+            "$(go env GOPATH)/bin/govulncheck" -mode=binary "dist/$v/sigdek_${v}_linux_amd64" > logs/govulncheck.txt 2>&1 || true
+          done
+          tail -n 4 logs/govulncheck.txt
       - name: What gh release create would upload (not run)
         run: |
           gh --version | head -1
@@ -131,6 +139,31 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: results-linux
+          path: ${{ runner.temp }}/rr/out
+
+  # Homebrew on macOS: this Mac's Command Line Tools are too old for a formula without a bottle,
+  # so the macOS install and upgrade run here too.
+  macos-brew:
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rehearsal-build
+          path: art
+      - name: Rehearse Homebrew on macOS
+        env:
+          ART: ${{ github.workspace }}/art
+          WORK: ${{ runner.temp }}/rr
+          LABEL: macos-runner
+          SECTIONS: brew upgrade
+          BREW_UPDATE: full
+        run: bash rehearsal/test-unix.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-macos-brew
           path: ${{ runner.temp }}/rr/out
 
   windows:

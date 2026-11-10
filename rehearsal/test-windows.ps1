@@ -186,10 +186,14 @@ try {
   & "$WORK\install-scoop.ps1" -RunAsAdmin -ScoopDir "$WORK\scoop" *>> $LOG
   $env:SCOOP = "$WORK\scoop"; $env:PATH = "$WORK\scoop\shims;$env:PATH"
   Log "  scoop: $(Join (scoop --version 2>&1))"
-  $out = Join (scoop bucket add sigdek "$WORK\sigdek.git" 2>&1)
-  Log "  scoop bucket add sigdek $WORK\sigdek.git -> $out"
-  if ((scoop bucket list 2>&1 | Out-String) -match 'sigdek') { Pass 'scoop: bucket add from a repository with bucket/' $out } else { Fail 'scoop: bucket add' $out }
-  $out = scoop install sigdek 2>&1; $st = $LASTEXITCODE
+  # Scoop takes a URL, not a Windows path, for a bucket; file:/// stands in for https://github.com/...
+  $bucketUrl = 'file:///' + (Fwd "$WORK\sigdek.git")
+  $out = Join (scoop bucket add sigdek $bucketUrl *>&1)
+  Log "  scoop bucket add sigdek $bucketUrl -> $out"
+  $list = scoop bucket list *>&1 | Out-String
+  Log "  scoop bucket list: $list"
+  if ($list -match 'sigdek') { Pass 'scoop: bucket add from a repository with bucket/' $out } else { Fail 'scoop: bucket add' $out }
+  $out = scoop install sigdek *>&1; $st = $LASTEXITCODE
   $out | ForEach-Object { Add-Content -LiteralPath $LOG -Value "    $_" }
   if (Test-Path "$WORK\scoop\shims\sigdek.exe") {
     Pass 'scoop: scoop install sigdek' (Join ($out | Select-Object -Last 2))
@@ -197,9 +201,9 @@ try {
   } else { Fail 'scoop: scoop install sigdek' "exit=$st : $(Join ($out | Select-Object -Last 4))" }
   # Upgrade: the release workflow's next pin commit lands on main.
   git -C "$WORK\sigdek.git" update-ref refs/heads/main "refs/tags/local-$V2"
-  $o = scoop update 2>&1; $o | ForEach-Object { Add-Content -LiteralPath $LOG -Value "    scoop update: $_" }
-  $o = scoop status 2>&1; Log "  scoop status: $(Join $o)"
-  $o = scoop update sigdek 2>&1; $o | ForEach-Object { Add-Content -LiteralPath $LOG -Value "    scoop update sigdek: $_" }
+  $o = scoop update *>&1; $o | ForEach-Object { Add-Content -LiteralPath $LOG -Value "    scoop update: $_" }
+  $o = scoop status *>&1; Log "  scoop status: $(Join $o)"
+  $o = scoop update sigdek *>&1; $o | ForEach-Object { Add-Content -LiteralPath $LOG -Value "    scoop update sigdek: $_" }
   $out = Join (& "$WORK\scoop\shims\sigdek.exe" version 2>&1)
   if ($out -eq "sigdek $V2 (windows/$arch)") { Pass 'upgrade: scoop update; scoop update sigdek' $out } else { Fail 'upgrade: scoop update sigdek' $out }
 } catch { Fail 'scoop' "$_" }
