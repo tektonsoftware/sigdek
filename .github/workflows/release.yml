@@ -16,6 +16,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Stop if the repository is still private
+        if: github.event.repository.private
+        run: |
+          echo "::error::tektonsoftware/sigdek is still private, so nobody could download this release, and npm would publish it without provenance for good. Make the repository public, then delete this tag and push it again (a re-run keeps the private flag of the original push)."
+          exit 1
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -118,4 +123,4 @@ jobs:
           if (-not $env:WINGET_TOKEN) { Write-Output "::notice::WINGET_TOKEN isn't set; the manifests are attached to this run for a manual submission."; exit 0 }
           Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
           $dir = Get-ChildItem -Directory -Recurse winget/manifests | Where-Object { $_.Name -match '^\d' } | Select-Object -First 1
-          .\wingetcreate.exe submit --token $env:WINGET_TOKEN --prtitle "New version: TektonSoftware.SigDek $($dir.Name)" $dir.FullName
+          .\wingetcreate.exe submit --no-open --token $env:WINGET_TOKEN --prtitle "New version: TektonSoftware.SigDek $($dir.Name)" $dir.FullName
