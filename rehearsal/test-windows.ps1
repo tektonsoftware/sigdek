@@ -192,7 +192,13 @@ function SlowCopy([string]$to, [string]$url) {
   Copy-Item "$REPOPS\.sigdek\*" $to
   (Get-Content "$REPOPS\.sigdek\recorder.lock") -replace "^url=$([regex]::Escape($BASE))", "url=$url" | Set-Content "$to\recorder.lock"
 }
-function Gets([string]$log) { @(Get-Content -LiteralPath "$OUT\$log" -ErrorAction SilentlyContinue | Where-Object { $_ -like "*GET /v$V1/$name HTTP*" }).Count }
+# Counted with Git Bash's grep: PowerShell read 0 lines from these logs while the server held them open.
+function Gets([string]$file) {
+  $gc = @(Get-Content -LiteralPath "$OUT\$file" -ErrorAction SilentlyContinue | Where-Object { $_ -like "*GET /v$V1/$name HTTP*" }).Count
+  $gr = [int](& 'C:\Program Files\Git\usr\bin\grep.exe' -c "GET /v$V1/$name HTTP" (Fwd "$OUT\$file"))
+  Add-Content -LiteralPath $LOG -Value "    requests in ${file}: grep $gr, Get-Content $gc"
+  $gr
+}
 function Hook([string]$launcher, [string]$ev) {
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $o = Join ((CurEv $ev $REPOPS) | powershell -NoProfile -ExecutionPolicy Bypass -File $launcher hook cursor $ev 2>&1)
