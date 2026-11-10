@@ -127,9 +127,8 @@ sha() { (sha256sum "$1" 2>/dev/null || shasum -a 256 "$1" 2>/dev/null || openssl
 # and ignores the hangup signal, so it outlives the hook. Its failure counts like this one would.
 # One at a time: it holds .downloading (launch.ps1 too), which counts as stale after 6 minutes.
 later() {
-  rm -f "$TMP"
-  [ -n "$(find "$MARK" -mmin +6 2>/dev/null)" ] && rm -f "$MARK"
-  (set -C && : >"$MARK") 2>/dev/null || exit 0
+  [ -e "$MARK" ] && [ -n "$(find "$MARK" -mmin +6 2>/dev/null)" ] && rm -f "$MARK"
+  (set -C && : >"$MARK") 2>/dev/null || { rm -f "$TMP"; exit 0; }
   (
     trap '' HUP
     if curl -fsSL --connect-timeout 10 --max-time 300 -o "$TMP" "$BASE/$NAME" && [ "$(sha "$TMP")" = "$WANT" ] &&
