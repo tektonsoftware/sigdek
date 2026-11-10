@@ -149,9 +149,9 @@ if [ "${SKIP_SERVERS:-0}" != 1 ]; then
   "$PY" -m http.server "$BAD_PORT" --bind 127.0.0.1 --directory "$WORK/srv-bad" >"$OUT/http-bad.log" 2>&1 &
   PIDS+=($!)
   # The same two, at SLOW_RATE: a link too slow for the hook's 8-second download.
-  "$PY" "$SCRIPT_DIR/throttle.py" "$SLOW_PORT" "$WORK/srv" "$SLOW_RATE" >"$OUT/http-slow.log" 2>&1 &
+  "$PY" "$SCRIPT_DIR/throttle.py" "$SLOW_PORT" "$WORK/srv" "$SLOW_RATE" "$OUT/http-slow.log" >"$OUT/http-slow-err.log" 2>&1 &
   PIDS+=($!)
-  "$PY" "$SCRIPT_DIR/throttle.py" "$SLOW_BAD_PORT" "$WORK/srv-bad" "$SLOW_RATE" >"$OUT/http-slow-bad.log" 2>&1 &
+  "$PY" "$SCRIPT_DIR/throttle.py" "$SLOW_BAD_PORT" "$WORK/srv-bad" "$SLOW_RATE" "$OUT/http-slow-bad.log" >"$OUT/http-slow-bad-err.log" 2>&1 &
   PIDS+=($!)
   echo "${PIDS[*]}" >"$WORK/server-pids"
   for i in $(seq 1 50); do curl -fsS "$BASE/v$V1/checksums.txt" >/dev/null 2>&1 && break; sleep 0.2; done

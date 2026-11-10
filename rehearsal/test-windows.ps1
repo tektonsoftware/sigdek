@@ -65,8 +65,8 @@ $servers = @()
 $servers += Start-Process -FilePath $py -ArgumentList '-m', 'http.server', '8765', '--bind', '127.0.0.1', '--directory', "$WORK\srv" -RedirectStandardError "$OUT\http.log" -RedirectStandardOutput "$OUT\http-out.log" -PassThru -NoNewWindow
 $servers += Start-Process -FilePath $py -ArgumentList '-m', 'http.server', '8766', '--bind', '127.0.0.1', '--directory', "$WORK\srv-bad" -RedirectStandardError "$OUT\http-bad.log" -RedirectStandardOutput "$OUT\http-bad-out.log" -PassThru -NoNewWindow
 # The same two at $SLOW_RATE: a link too slow for the hook's 8-second download.
-$servers += Start-Process -FilePath $py -ArgumentList 'rehearsal/throttle.py', '8767', "$WORK\srv", "$SLOW_RATE" -RedirectStandardError "$OUT\http-slow.log" -RedirectStandardOutput "$OUT\http-slow-out.log" -PassThru -NoNewWindow
-$servers += Start-Process -FilePath $py -ArgumentList 'rehearsal/throttle.py', '8768', "$WORK\srv-bad", "$SLOW_RATE" -RedirectStandardError "$OUT\http-slow-bad.log" -RedirectStandardOutput "$OUT\http-slow-bad-out.log" -PassThru -NoNewWindow
+$servers += Start-Process -FilePath $py -ArgumentList 'rehearsal/throttle.py', '8767', "$WORK\srv", "$SLOW_RATE", "$OUT\http-slow.log" -RedirectStandardError "$OUT\http-slow-err.log" -RedirectStandardOutput "$OUT\http-slow-out.log" -PassThru -NoNewWindow
+$servers += Start-Process -FilePath $py -ArgumentList 'rehearsal/throttle.py', '8768', "$WORK\srv-bad", "$SLOW_RATE", "$OUT\http-slow-bad.log" -RedirectStandardError "$OUT\http-slow-bad-err.log" -RedirectStandardOutput "$OUT\http-slow-bad-out.log" -PassThru -NoNewWindow
 for ($i = 0; $i -lt 50; $i++) { try { Invoke-WebRequest -UseBasicParsing "$BASE/v$V1/checksums.txt" | Out-Null; break } catch { Start-Sleep -Milliseconds 200 } }
 
 # --- The tap/bucket repository: main after the pin commit, base rewritten ------------------------
@@ -192,7 +192,6 @@ function SlowCopy([string]$to, [string]$url) {
   Copy-Item "$REPOPS\.sigdek\*" $to
   (Get-Content "$REPOPS\.sigdek\recorder.lock") -replace "^url=$([regex]::Escape($BASE))", "url=$url" | Set-Content "$to\recorder.lock"
 }
-# Get-Content, not Select-String: the server holds the log open for writing, which Select-String can't share.
 function Gets([string]$log) { @(Get-Content -LiteralPath "$OUT\$log" -ErrorAction SilentlyContinue | Where-Object { $_ -like "*GET /v$V1/$name HTTP*" }).Count }
 function Hook([string]$launcher, [string]$ev) {
   $sw = [Diagnostics.Stopwatch]::StartNew()
