@@ -118,4 +118,4 @@ jobs:
           if (-not $env:WINGET_TOKEN) { Write-Output "::notice::WINGET_TOKEN isn't set; the manifests are attached to this run for a manual submission."; exit 0 }
           Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
           $dir = Get-ChildItem -Directory -Recurse winget/manifests | Where-Object { $_.Name -match '^\d' } | Select-Object -First 1
-          .\wingetcreate.exe submit --token $env:WINGET_TOKEN --prtitle "New version: TektonSoftware.SigDek $($dir.Name)" $dir.FullName
+          .\wingetcreate.exe submit --no-open --token $env:WINGET_TOKEN --prtitle "New version: TektonSoftware.SigDek $($dir.Name)" $dir.FullName
