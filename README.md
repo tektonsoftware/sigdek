@@ -37,13 +37,12 @@ A hook command never stops the agent on its own: when the launcher is missing or
 | Where | Install |
 |---|---|
 | Any OS, with Node.js | `npm install -g sigdek` |
-| macOS or Linux, Homebrew | `brew tap tektonsoftware/sigdek https://github.com/tektonsoftware/sigdek` then `brew install tektonsoftware/sigdek/sigdek` (the full name tells Homebrew to trust this one formula, which it requires for formulae outside its own taps) |
 | Windows, Scoop | `scoop bucket add sigdek https://github.com/tektonsoftware/sigdek` then `scoop install sigdek` |
 | Windows, winget | `winget install TektonSoftware.SigDek`, available a few days after each release, once Microsoft merges its pull request |
 | Go 1.24 or later | `go install github.com/tektonsoftware/sigdek/cmd/sigdek@latest` |
 | Anything else | Download the binary for your platform from [GitHub releases](https://github.com/tektonsoftware/sigdek/releases) and check it against `checksums.txt` |
 
-Every channel except `go install`, which compiles from source, installs the same binaries, built once per release. The npm package is a small launcher that runs the one for your platform from an `@tektonsoftware/sigdek-*` package. The Homebrew formula (`Formula/`) and Scoop manifest (`bucket/`) live in this repository and are updated by the release workflow, which also opens the winget pull request.
+Every channel except `go install`, which compiles from source, installs the same binaries, built once per release. The npm package is a small launcher that runs the one for your platform from an `@tektonsoftware/sigdek-*` package. The Scoop manifest (`bucket/`) lives in this repository and is updated by the release workflow, which also opens the winget pull request. The workflow writes a Homebrew formula (`Formula/`) too, but Homebrew isn't an install option yet: without prebuilt bottles, Homebrew on macOS refuses it when the Command Line Tools are out of date.
 
 ## What it records, and what it never does
 
