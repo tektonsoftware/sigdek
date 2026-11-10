@@ -86,7 +86,7 @@ try {
     }
     if (-not $lock['url']) { Exit-Safe }
 
-    # A download carrying on in the background (below) leaves the network to itself.
+    # While a download carries on in the background (below), other events leave it be.
     if (-not $background -and (Test-Path -LiteralPath $mark) -and ((Get-Date) - (Get-Item -LiteralPath $mark).LastWriteTime).TotalMinutes -lt 6) { Exit-Safe }
 
     # After a failed download, wait 1, 2, 4 ... up to 60 minutes before trying again; a new
