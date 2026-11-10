@@ -249,6 +249,16 @@ if ($wg) {
   Fail 'winget: available on the runner' 'winget could not run here; see the log'
 }
 
+# --- release.yml's winget job, without submitting: the folder it picks, and wingetcreate's arguments
+try {
+  $dir = Get-ChildItem -Directory -Recurse "$ART\dist\$V1\winget\manifests" | Where-Object { $_.Name -match '^\d' } | Select-Object -First 1
+  Log "  release.yml's folder pick: $($dir.FullName)"
+  Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile "$WORK\wingetcreate.exe"
+  $help = & "$WORK\wingetcreate.exe" submit --help *>&1 | Out-String
+  Add-Content -LiteralPath $LOG -Value $help
+  if ($dir.Name -eq $V1 -and $help -match '--prtitle' -and $help -match '--token') { Pass 'winget: release.yml picks the manifest folder; wingetcreate submit takes --token and --prtitle' "$($dir.Name); wingetcreate $((Get-Item "$WORK\wingetcreate.exe").VersionInfo.ProductVersion)" } else { Fail 'winget: release.yml winget job inputs' "dir=$($dir.Name)" }
+} catch { Fail 'winget: wingetcreate' "$_" }
+
 # --- The sh launchers under Git Bash -----------------------------------------------------------
 Log "== Git Bash: repository and plugin launchers (rehearsal/test-unix.sh)"
 $env:SIGDEK_HOME = "$WORK\home-default"

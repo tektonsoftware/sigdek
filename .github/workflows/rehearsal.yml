@@ -166,6 +166,30 @@ jobs:
           name: results-macos-brew
           path: ${{ runner.temp }}/rr/out
 
+  # The darwin/amd64 binary (Intel Macs): this Mac has no Rosetta, so it runs here.
+  macos-intel:
+    needs: build
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rehearsal-build
+          path: art
+      - name: Rehearse the plugin launchers on an Intel Mac
+        env:
+          ART: ${{ github.workspace }}/art
+          WORK: ${{ runner.temp }}/rr
+          LABEL: macos-intel
+          SECTIONS: plugin
+        run: bash rehearsal/test-unix.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-macos-intel
+          path: ${{ runner.temp }}/rr/out
+
   windows:
     needs: build
     runs-on: windows-latest
