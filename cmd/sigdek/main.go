@@ -553,8 +553,16 @@ func runStatus(home string) error {
 				lock.Version, strings.ReplaceAll(initcmd.Platform(), "_", "/"))
 		}
 	}
-	if h, err := os.UserHomeDir(); err == nil && fileHas(filepath.Join(h, ".claude", "settings.json"), "hook claude-code") {
-		fmt.Println("User level  Claude Code hooks found in ~/.claude/settings.json")
+	user := claudeUserDir()
+	if user != "" && fileHas(filepath.Join(user, "settings.json"), "hook claude-code") {
+		fmt.Println("User level  Claude Code hooks found in " + tildePath(filepath.Join(user, "settings.json")))
+	}
+	if on, where := pluginState(user, gitinfo.Find(cwd).Root); where != "" {
+		if on {
+			fmt.Println("Plugin      SigDek's Claude Code plugin is on (" + where + ")")
+		} else {
+			fmt.Println("Plugin      SigDek's Claude Code plugin is turned off here (" + where + ")")
+		}
 	}
 	if at, msg := lastError(config.ErrorLog(home)); msg != "" && !(strings.HasPrefix(msg, "upload: ") && at.Before(health.ErrorsOverAt())) {
 		// An upload error from before the last good upload, or before the last sign-in, is over;
@@ -612,6 +620,78 @@ func yesNo(b bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+// claudeUserDir is where Claude Code keeps its user settings: CLAUDE_CONFIG_DIR, or ~/.claude.
+func claudeUserDir() string {
+	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
+		return d
+	}
+	if h, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(h, ".claude")
+	}
+	return ""
+}
+
+// tildePath writes a path under the home folder as ~/…, the way people read it.
+func tildePath(p string) string {
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		if rel, err := filepath.Rel(h, p); err == nil && !strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(filepath.Join("~", rel))
+		}
+	}
+	return p
+}
+
+// pluginState says whether Claude Code has SigDek's plugin on here, as Claude Code decides it:
+// the repository's .claude/settings.local.json, then its .claude/settings.json, then the user's
+// settings, the first that sets "sigdek@<any marketplace>" in enabledPlugins. where names that
+// file, and is empty when none does (the plugin isn't installed, or isn't SigDek's concern here).
+func pluginState(userDir, repoRoot string) (on bool, where string) {
+	var files [][2]string
+	if repoRoot != "" && isRepo(repoRoot) {
+		files = append(files,
+			[2]string{filepath.Join(repoRoot, ".claude", "settings.local.json"), "this repo's .claude/settings.local.json"},
+			[2]string{filepath.Join(repoRoot, ".claude", "settings.json"), "this repo's .claude/settings.json"})
+	}
+	if userDir != "" {
+		p := filepath.Join(userDir, "settings.json")
+		files = append(files, [2]string{p, tildePath(p)})
+	}
+	for _, f := range files {
+		if set, enabled := pluginSetting(f[0]); set {
+			return enabled, f[1]
+		}
+	}
+	return false, ""
+}
+
+// pluginSetting reads one Claude Code settings file's enabledPlugins entry for SigDek's plugin,
+// from any marketplace ("sigdek@sigdek" from SigDek's own). An entry that turns it on wins over
+// one that turns it off, in the rare file that lists it from two marketplaces.
+func pluginSetting(path string) (set, enabled bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false, false
+	}
+	var s struct {
+		EnabledPlugins map[string]json.RawMessage `json:"enabledPlugins"`
+	}
+	if json.Unmarshal(b, &s) != nil {
+		return false, false
+	}
+	for k, v := range s.EnabledPlugins {
+		if !strings.HasPrefix(k, "sigdek@") {
+			continue
+		}
+		var on bool
+		if json.Unmarshal(v, &on) != nil {
+			continue
+		}
+		set = true
+		enabled = enabled || on
+	}
+	return set, enabled
 }
 
 func fileHas(path, needle string) bool {

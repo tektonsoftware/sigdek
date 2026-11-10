@@ -543,6 +543,41 @@ func TestCLIPolish(t *testing.T) {
 	waitForUploader(t, home)
 }
 
+// QA2-CLAIMS-5 (site review): status says when SigDek's Claude Code plugin is on, from the user's
+// settings or the repository's, with the repository's settings winning as in Claude Code.
+func TestStatusNamesThePlugin(t *testing.T) {
+	home, dir := sigdekHome(t), repoDir(t)
+	claudeDir := t.TempDir()
+	status := func() string {
+		cmd := exec.Command(binary, "status")
+		cmd.Env = append(os.Environ(), "SIGDEK_HOME="+home, "CLAUDE_CONFIG_DIR="+claudeDir)
+		cmd.Dir = dir
+		out, _ := cmd.CombinedOutput()
+		return string(out)
+	}
+	if out := status(); strings.Contains(out, "Plugin ") {
+		t.Fatalf("no plugin installed, but status names one:\n%s", out)
+	}
+	os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(`{"enabledPlugins":{"other@market":true,"sigdek@sigdek":true}}`), 0o644)
+	if out := status(); !strings.Contains(out, "SigDek's Claude Code plugin is on ("+filepath.Join(claudeDir, "settings.json")) && !strings.Contains(out, "SigDek's Claude Code plugin is on (~") {
+		t.Fatalf("user-level plugin not named:\n%s", out)
+	}
+	os.MkdirAll(filepath.Join(dir, ".claude"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".claude", "settings.local.json"), []byte(`{"enabledPlugins":{"sigdek@sigdek":false}}`), 0o644)
+	if out := status(); !strings.Contains(out, "plugin is turned off here (this repo's .claude/settings.local.json)") {
+		t.Fatalf("repository's off switch not named:\n%s", out)
+	}
+	os.WriteFile(filepath.Join(dir, ".claude", "settings.local.json"), []byte(`{"enabledPlugins":{"sigdek@claude-plugins-official":true}}`), 0o644)
+	if out := status(); !strings.Contains(out, "plugin is on (this repo's .claude/settings.local.json)") {
+		t.Fatalf("plugin from another marketplace not named:\n%s", out)
+	}
+	os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(`{not json`), 0o644)
+	os.Remove(filepath.Join(dir, ".claude", "settings.local.json"))
+	if out := status(); strings.Contains(out, "Plugin ") || !strings.Contains(out, "Errors      none") {
+		t.Fatalf("unreadable settings should be ignored quietly:\n%s", out)
+	}
+}
+
 // QA2-REC-1: status points out hook commands written before they stopped passing on a failure.
 func TestStatusNamesOldHookCommands(t *testing.T) {
 	home, dir := sigdekHome(t), repoDir(t)
