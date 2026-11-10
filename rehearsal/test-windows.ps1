@@ -186,7 +186,7 @@ Pop-Location
 # --- launch.ps1 on a slow link -------------------------------------------------------------------
 $name = "sigdek_${V1}_windows_$arch.exe"
 $size = (Get-Item "$WORK\srv\v$V1\$name").Length
-Log "== launch.ps1 on a slow link: $name ($size bytes) at $SLOW_RATE bytes a second, about $([int]($size / $SLOW_RATE)) s; the hook allows 8 s"
+Log "== launch.ps1 on a slow link: $name ($size bytes) at $SLOW_RATE bytes a second, about $([int]($size / $SLOW_RATE)) s; each event downloads until 7 s after it started"
 function SlowCopy([string]$to, [string]$url) {
   New-Item -ItemType Directory -Force $to | Out-Null
   Copy-Item "$REPOPS\.sigdek\*" $to
@@ -206,38 +206,47 @@ function Hook([string]$launcher, [string]$ev) {
 }
 SlowCopy "$WORK\slow-ps\.sigdek" $SLOW
 SlowCopy "$WORK\slow-ps-bad\.sigdek" $SLOW_BAD
-if ((Get-Content "$WORK\slow-ps\.sigdek\launch.ps1" -Raw) -match "'download'") { Log '  the launch.ps1 sigdek init wrote has the background download' } else { Fail 'slow: setup' 'launch.ps1 has no background download' }
+if ((Get-Content "$WORK\slow-ps\.sigdek\launch.ps1" -Raw) -match 'AddRange') { Log '  the launch.ps1 sigdek init wrote resumes downloads (Range)' } else { Fail 'slow: setup' 'launch.ps1 has no resumed download' }
 for ($i = 0; $i -lt 50; $i++) { try { Invoke-WebRequest -UseBasicParsing "$SLOW/v$V1/checksums.txt" | Out-Null; break } catch { Start-Sleep -Milliseconds 200 } }
-$h = FreshHome 'ps1-slow'; $env:SIGDEK_HOME = $h; $c = "$h\bin\$V1"
-$r = Hook "$WORK\slow-ps\.sigdek\launch.ps1" 'preToolUse'; $landFrom = [Diagnostics.Stopwatch]::StartNew()
-Log "  slow launch.ps1 preToolUse first use -> exit=$($r.st) ($($r.ms) ms) out=$($r.out) cache=$(Join (Get-ChildItem -Force -Name $c -ErrorAction SilentlyContinue))"
-if ($r.st -eq 0 -and $r.out -eq '{"permission":"allow"}' -and $r.ms -lt 10000 -and -not (Test-Path "$c\sigdek.exe") -and (Test-Path "$c\.downloading") -and (Records $h) -eq 0) { Pass 'slow: launch.ps1 first use' "exit 0 in $($r.ms) ms, answer $($r.out), 0 records; the hidden copy carries on" } else { Fail 'slow: launch.ps1 first use' "exit=$($r.st) ms=$($r.ms) out=$($r.out)" }
-$r = Hook "$WORK\slow-ps\.sigdek\launch.ps1" 'sessionStart'
-Log "  slow launch.ps1 sessionStart during the download -> exit=$($r.st) ($($r.ms) ms) out=$($r.out)"
-if ($r.st -eq 0 -and $r.out -eq '{}' -and $r.ms -lt 3000 -and (Records $h) -eq 0 -and -not (Test-Path "$c\sigdek.exe")) { Pass 'slow: launch.ps1, an event during the download' "exit 0 in $($r.ms) ms, answer {}, 0 records" } else { Fail 'slow: launch.ps1, an event during the download' "exit=$($r.st) ms=$($r.ms) out=$($r.out)" }
-$hb = FreshHome 'ps1-slow-bad'; $env:SIGDEK_HOME = $hb; $cb = "$hb\bin\$V1"
-$rb = Hook "$WORK\slow-ps-bad\.sigdek\launch.ps1" 'preToolUse'
-Log "  slow tampered launch.ps1 preToolUse -> exit=$($rb.st) ($($rb.ms) ms) out=$($rb.out)"
-$land = $null
-for ($i = 0; $i -lt 600; $i++) {
-  if (-not $land -and (Test-Path "$c\sigdek.exe") -and -not (Test-Path "$c\.downloading")) { $land = $landFrom.ElapsedMilliseconds }
-  if ($land -and -not (Test-Path "$cb\.downloading")) { break }
-  Start-Sleep -Milliseconds 500
-}
-Get-ChildItem -Force $c, $cb -ErrorAction SilentlyContinue | ForEach-Object { Add-Content -LiteralPath $LOG -Value "    $($_.FullName) $($_.Length)" }
-$n = Gets 'http-slow.log'
-if ($land -and -not (Test-Path "$c\.download-failed") -and $n -eq 1) { Pass 'slow: launch.ps1 background download lands' "$land ms after the first hook returned; $n request (the hidden copy's)" } else { Fail 'slow: launch.ps1 background download lands' "land=$land requests=$n" }
-$env:SIGDEK_HOME = $h
-$r = Hook "$WORK\slow-ps\.sigdek\launch.ps1" 'sessionStart'
-if ($r.st -eq 0 -and $r.out -eq '{}' -and (Records $h) -eq 1) { Pass 'slow: launch.ps1, the next event records' "exit 0, answer {}, 1 record; $($r.ms) ms" } else { Fail 'slow: launch.ps1, the next event records' "exit=$($r.st) out=$($r.out) records=$(Records $h)" }
 $want = ((Get-Content "$ART\dist\$V1\checksums.txt" | Where-Object { $_ -match " $([regex]::Escape($name))$" }) -split '\s+')[0]
+$part = "sigdek.exe.$($want.Substring(0, 16)).partial"
+function PartSize([string]$c) { $f = Get-Item "$c\$part" -ErrorAction SilentlyContinue; if ($f) { $f.Length } else { -1 } }
+
+# Event by event until the recorder runs: each one must stay inside the agent's 10 seconds.
+$h = FreshHome 'ps1-slow'; $env:SIGDEK_HOME = $h; $c = "$h\bin\$V1"
+$times = @(); $ev = 'preToolUse'; $ok = $true; $events = 0
+for ($k = 1; $k -le 10; $k++) {
+  $r = Hook "$WORK\slow-ps\.sigdek\launch.ps1" $ev
+  $times += $r.ms; $events = $k
+  $n = Records $h
+  Log "  slow launch.ps1 event $k ($ev) -> exit=$($r.st) ($($r.ms) ms) out=$($r.out) partial=$(PartSize $c) records=$n cached=$(Test-Path "$c\sigdek.exe")"
+  $safe = if ($ev -eq 'preToolUse') { '{"permission":"allow"}' } else { '{}' }
+  if ($r.st -ne 0 -or $r.out -ne $safe -or $r.ms -ge 10000) { $ok = $false }
+  if ($n -ge 1) { break }
+  $ev = 'sessionStart'
+}
+$reqs = Gets 'http-slow.log'
+$ranges = @(Get-Content "$OUT\http-slow.log" -ErrorAction SilentlyContinue | Where-Object { $_ -match 'range bytes=' }).Count
+if ($ok -and (Records $h) -eq 1 -and (Test-Path "$c\sigdek.exe") -and (PartSize $c) -eq -1 -and -not (Test-Path "$c\.download-failed") -and $events -ge 2) {
+  Pass 'slow: launch.ps1 resumes the download and records' "recorder ran in event $events; each event exit 0 with its answer, in $($times -join ', ') ms; $reqs requests ($ranges with Range); no partial or .download-failed left"
+} else { Fail 'slow: launch.ps1 resumes the download and records' "events=$events times=$($times -join ',') records=$(Records $h) cached=$(Test-Path "$c\sigdek.exe") partial=$(PartSize $c) requests=$reqs" }
+$r = Hook "$WORK\slow-ps\.sigdek\launch.ps1" 'sessionStart'
+if ($r.st -eq 0 -and $r.out -eq '{}' -and (Records $h) -eq 2) { Pass 'slow: launch.ps1, the next event records from the cache' "exit 0, answer {}, $($r.ms) ms" } else { Fail 'slow: launch.ps1, the next event' "exit=$($r.st) out=$($r.out) records=$(Records $h)" }
+
+# Tampered on the slow server: refused once the last chunk is in.
+$hb = FreshHome 'ps1-slow-bad'; $env:SIGDEK_HOME = $hb; $cb = "$hb\bin\$V1"
+$times = @(); $ok = $true
+for ($k = 1; $k -le 10 -and -not (Test-Path "$cb\.download-failed"); $k++) {
+  $r = Hook "$WORK\slow-ps-bad\.sigdek\launch.ps1" 'preToolUse'
+  $times += $r.ms
+  Log "  slow tampered launch.ps1 event $k -> exit=$($r.st) ($($r.ms) ms) out=$($r.out) partial=$(PartSize $cb)"
+  if ($r.st -ne 0 -or $r.out -ne '{"permission":"allow"}' -or $r.ms -ge 10000) { $ok = $false }
+}
 $stamp = (Get-Content -LiteralPath "$cb\.download-failed" -Raw -ErrorAction SilentlyContinue)
 $nb = Gets 'http-slow-bad.log'
-$temps = @(Get-ChildItem "$cb\*.download" -ErrorAction SilentlyContinue).Count
-if ($rb.st -eq 0 -and $rb.out -eq '{"permission":"allow"}' -and $rb.ms -lt 10000 -and -not (Test-Path "$cb\sigdek.exe") -and "$stamp".Trim() -eq "1 $want" -and $temps -eq 0 -and -not (Test-Path "$cb\.downloading") -and (Records $hb) -eq 0) {
-  Pass 'slow: launch.ps1 refuses a tampered background download' "hook exit 0 in $($rb.ms) ms, answer $($rb.out); $nb request; nothing cached, no temporary file, 0 records; .download-failed: 1 $($want.Substring(0, 12))..."
-} else { Fail 'slow: launch.ps1 refuses a tampered background download' "exit=$($rb.st) ms=$($rb.ms) out=$($rb.out) stamp=$stamp temps=$temps requests=$nb" }
-$env:SIGDEK_HOME = $hb
+if ($ok -and -not (Test-Path "$cb\sigdek.exe") -and (PartSize $cb) -eq -1 -and "$stamp".Trim() -eq "1 $want" -and (Records $hb) -eq 0) {
+  Pass 'slow: launch.ps1 refuses a tampered download after its last chunk' "events in $($times -join ', ') ms, each exit 0 with the safe answer; $nb requests; nothing cached, partial deleted, 0 records; .download-failed: 1 $($want.Substring(0, 12))..."
+} else { Fail 'slow: launch.ps1 refuses a tampered download' "times=$($times -join ',') stamp=$stamp partial=$(PartSize $cb) cached=$(Test-Path "$cb\sigdek.exe") requests=$nb" }
 $r = Hook "$WORK\slow-ps-bad\.sigdek\launch.ps1" 'preToolUse'
 if ($r.st -eq 0 -and $r.out -eq '{"permission":"allow"}' -and (Gets 'http-slow-bad.log') -eq $nb) { Pass 'slow: launch.ps1 backs off after the refused download' "exit 0 in $($r.ms) ms, no request" } else { Fail 'slow: launch.ps1 back-off after the refused download' "exit=$($r.st) out=$($r.out) requests=$(Gets 'http-slow-bad.log')" }
 $env:SIGDEK_HOME = "$WORK\home-default"
