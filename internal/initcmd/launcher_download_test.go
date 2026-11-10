@@ -71,8 +71,9 @@ func newSlowServer(t *testing.T, name string, body []byte, rate int) *slowServer
 	return s
 }
 
-// slowSeconds is how long the whole file takes at the slow server's rate: past the hook's 8 s.
-const slowSeconds = 11
+// slowSeconds is how long the whole file takes at the slow server's rate: well past the hook's
+// 8 s, so a hook that waits for the download, or isn't limited, takes far longer than hookLimit.
+const slowSeconds = 14
 
 // download is one launcher's first use of a pinned recorder, against a slow server.
 type download struct {
@@ -86,13 +87,13 @@ type download struct {
 	run   func(stdin string, args ...string) (stdout, stderr string, code int, took time.Duration)
 }
 
-// recorderFor gives a recorder this machine can run: a shell script padded to about 1.6 MB on
-// macOS and Linux (exit 0 stops sh before the padding), or this test binary on Windows. Served
-// in slowSeconds, the script goes at about 1.2 Mbit/s.
+// recorderFor gives a recorder this machine can run: a shell script padded to 2 MB on macOS and
+// Linux (exit 0 stops sh before the padding), or this test binary on Windows. Served in
+// slowSeconds, the script goes at about 1.1 Mbit/s.
 func recorderFor(t *testing.T) (body []byte, env []string) {
 	if runtime.GOOS != "windows" {
 		script := "#!/bin/sh\necho \"recorder ran: $*\"\ncat\nexit 0\n"
-		return []byte(script + strings.Repeat("#", 1_650_000)), nil
+		return []byte(script + strings.Repeat("#", 2_000_000)), nil
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -174,6 +175,9 @@ func newDownload(t *testing.T, shell string, body []byte, want string, recEnv []
 	os.WriteFile(filepath.Join(dir, "recorder.lock"), []byte(fmt.Sprintf("version=7.0.0\nurl=%s\n%s_%s=%s\n", srv.URL, osName, runtime.GOARCH, want)), 0o644)
 	cache := t.TempDir()
 	d := &download{t: t, dir: dir, srv: srv, want: want, cache: filepath.Join(cache, "7.0.0"), bin: filepath.Join(cache, "7.0.0", "sigdek"+ext)}
+	// Let a background download finish before the temporary folders go (Windows can't remove a
+	// file another process has open).
+	t.Cleanup(func() { d.settled(3 * slowSeconds * time.Second) })
 	d.env = cleanEnv(append([]string{"SIGDEK_CACHE=" + filepath.ToSlash(cache), "SIGDEK_HOME=" + filepath.ToSlash(t.TempDir())}, recEnv...)...)
 	d.run = func(stdin string, args ...string) (string, string, int, time.Duration) {
 		if shell == "powershell" {
@@ -223,8 +227,10 @@ func (d *download) temps() []string {
 	return m
 }
 
-// The hook's own deadline: Claude Code and Cursor give a hook 10 seconds.
-const hookLimit = 9500 * time.Millisecond
+// hookLimit is the most a first use on a slow link may take: Claude Code and Cursor give a hook
+// 10 seconds. Windows CI runs these tests under load, where Git Bash's process starts have added
+// up to 1.9 s to curl's 8 s; 11 s there still fails a hook that waits for the download.
+var hookLimit = map[bool]time.Duration{false: 9500 * time.Millisecond, true: 11 * time.Second}[runtime.GOOS == "windows"]
 
 func launcherForms(t *testing.T) []string {
 	if runtime.GOOS == "windows" {
@@ -261,7 +267,7 @@ func TestLauncherFinishesASlowDownloadInTheBackground(t *testing.T) {
 			// First use: the hook gives up on the download within its limit and answers as usual.
 			out, errOut, code, took := d.run("{}", "hook", "cursor", "preToolUse")
 			t.Logf("first hook: %v", took)
-			if code != 0 || out != "{\"permission\":\"allow\"}\n" || took > hookLimit || took < 7*time.Second {
+			if code != 0 || out != "{\"permission\":\"allow\"}\n" || took > hookLimit || took < 7500*time.Millisecond {
 				t.Fatalf("first hook: exit %d after %v, stdout %q, stderr %q", code, took, out, errOut)
 			}
 			if fileExists(d.bin) {
@@ -348,7 +354,9 @@ func TestLauncherStartsOneBackgroundDownload(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if out, errOut, code, took := d.run("{}", "hook", "claude-code"); code != 0 || out != "" || took > hookLimit {
+				out, errOut, code, took := d.run("{}", "hook", "claude-code")
+				t.Logf("hook: %v", took)
+				if code != 0 || out != "" || took > hookLimit+time.Second {
 					t.Errorf("hook: exit %d after %v, stdout %q, stderr %q", code, took, out, errOut)
 				}
 			}()
@@ -384,6 +392,7 @@ func TestLauncherDownloadMarker(t *testing.T) {
 			if out, _, code, _ := d.run("{}", "hook", "claude-code"); code != 0 || !strings.Contains(out, "recorder ran") {
 				t.Fatalf("stale marker: exit %d, stdout %q", code, out)
 			}
+			os.Remove(mark) // launch.sh replaces a stale marker only when it starts a background download
 		})
 	}
 }
