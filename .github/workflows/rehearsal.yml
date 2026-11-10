@@ -1,0 +1,158 @@
+name: release-rehearsal
+
+# REHEARSAL ONLY (branch release-rehearsal, never merged). Rehearses release.yml with nothing
+# published: no tag, no GitHub release, no npm publish to registry.npmjs.org, no winget
+# submission, no push. It uses no secrets and can't mint an OIDC token.
+on:
+  push:
+    branches: [release-rehearsal]
+
+permissions:
+  contents: read
+
+env:
+  V1: 0.0.99
+  V2: 0.0.100
+  BASE: http://127.0.0.1:8765
+  GH_BASE: https://github.com/tektonsoftware/sigdek/releases/download
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: actionlint, with shellcheck, on the real workflows
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          shellcheck --version | head -2 || true
+          mkdir -p logs
+          "$(go env GOPATH)/bin/actionlint" -no-color .github/workflows/release.yml .github/workflows/ci.yml > logs/actionlint.txt 2>&1 || true
+          cat logs/actionlint.txt
+      - name: Test (release.yml)
+        run: go test ./...
+      - name: Build (release.yml's commands, for two versions, plus one -X for the local base)
+        run: |
+          for version in "$V1" "$V2"; do
+            mkdir -p "dist/$version"
+            for t in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+              os=${t%/*} arch=${t#*/} ext=""
+              [ "$os" = windows ] && ext=".exe"
+              GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -buildvcs=false \
+                -ldflags "-s -w -X main.version=$version -X github.com/tektonsoftware/sigdek/internal/initcmd.ReleaseBase=$BASE" \
+                -o "dist/$version/sigdek_${version}_${os}_${arch}${ext}" ./cmd/sigdek
+            done
+            (cd "dist/$version" && sha256sum sigdek_* > checksums.txt && cat checksums.txt)
+          done
+          go version > logs/go-version.txt
+      - name: What gh release create would upload (not run)
+        run: |
+          gh --version | head -1
+          gh release create --help | grep -E -- '--title|--notes |--verify-tag|--draft' || true
+          cd "dist/$V1" && ls -l
+      - name: Build the npm packages (release.yml)
+        run: |
+          for v in "$V1" "$V2"; do node scripts/npm-packages.mjs "$v" "dist/$v" "npm-out/$v"; done
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Pack the npm packages with release.yml's npm, and dry-run the publish
+        run: |
+          npm install -g npm@11.21.0
+          npm --version
+          for v in "$V1" "$V2"; do
+            mkdir -p "npm-tgz/$v"
+            for d in npm-out/$v/sigdek-* npm-out/$v/sigdek; do
+              (cd "$d" && npm pack --pack-destination "$GITHUB_WORKSPACE/npm-tgz/$v" > /dev/null)
+            done
+          done
+          ls -l npm-tgz/*
+          for f in npm-tgz/$V1/*.tgz; do echo "== $f"; tar -tvzf "$f"; done
+          # --dry-run never uploads; there's also no token here and no id-token permission.
+          for d in npm-out/$V1/sigdek-linux-amd64 npm-out/$V1/sigdek; do
+            (cd "$d" && npm publish --dry-run --access public 2>&1 | tee -a "$GITHUB_WORKSPACE/logs/npm-publish-dry-run.txt") || true
+          done
+      - name: Pin (release.yml's step without the push), for two versions, then the local base
+        run: |
+          git checkout --detach # a tag build starts on a detached HEAD
+          git fetch origin main && git checkout main
+          git config user.name "sigdek-release"
+          git config user.email "hello@sigdek.com"
+          for v in "$V1" "$V2"; do
+            scripts/sync-plugins.sh "$v" "dist/$v/checksums.txt"
+            node scripts/package-managers.mjs "$v" "dist/$v/checksums.txt" "dist/$v/winget"
+            git add plugins/ Formula/ bucket/
+            git commit -m "release: pin plugins, Homebrew and Scoop to v$v"
+            git show --stat HEAD | tee -a logs/pin.txt
+            git show HEAD -- Formula bucket plugins >> logs/pin-diff.txt
+            git tag "pinned-$v"
+            # Rehearsal only: every download points at the local server instead of GitHub releases.
+            sed -i "s#$GH_BASE#$BASE#g" Formula/sigdek.rb bucket/sigdek.json plugins/*/scripts/recorder.lock "dist/$v"/winget/manifests/t/TektonSoftware/SigDek/"$v"/*.yaml
+            git commit -qam "rehearsal: downloads come from $BASE"
+            git show HEAD >> logs/rewrite-diff.txt
+            git tag "local-$v"
+          done
+          git status --short
+          git bundle create tap.bundle HEAD main "pinned-$V1" "local-$V1" "pinned-$V2" "local-$V2"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rehearsal-build
+          path: |
+            dist
+            npm-tgz
+            tap.bundle
+            logs
+
+  linux:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rehearsal-build
+          path: art
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Rehearse every Linux channel
+        env:
+          ART: ${{ github.workspace }}/art
+          WORK: ${{ runner.temp }}/rr
+          BREW_UPDATE: full
+          BREW_AUDIT: "1"
+        run: bash rehearsal/test-unix.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-linux
+          path: ${{ runner.temp }}/rr/out
+
+  windows:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rehearsal-build
+          path: art
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Rehearse every Windows channel
+        shell: pwsh
+        env:
+          ART: ${{ github.workspace }}\art
+          WORK: ${{ runner.temp }}\rr
+        run: ./rehearsal/test-windows.ps1
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-windows
+          path: ${{ runner.temp }}\rr\out

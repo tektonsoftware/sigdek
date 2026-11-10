@@ -31,7 +31,9 @@ var launchSh []byte
 var launchPs1 []byte
 
 // ReleaseBase is where tagged releases are published.
-const ReleaseBase = "https://github.com/tektonsoftware/sigdek/releases/download"
+// REHEARSAL ONLY (branch release-rehearsal, never merged): a var, so the rehearsal build can
+// point it at a local server with -X. On main it is a const.
+var ReleaseBase = "https://github.com/tektonsoftware/sigdek/releases/download"
 
 // Targets are the platforms each release is built for.
 var Targets = []string{"darwin_amd64", "darwin_arm64", "linux_amd64", "linux_arm64", "windows_amd64", "windows_arm64"}
