@@ -67,19 +67,61 @@ const (
 // under failClosed. `grep '^{'` passes on the launcher's answer (one JSON object) and fails
 // when there is none, so `|| echo` answers for a launcher that failed, for one that printed
 // nothing and exited 0 (an empty launch.sh, or a folder in its place), and for one replaced by
-// something that prints other text (a Git LFS pointer runs `size`, which macOS has). Cursor runs commands through PowerShell on
-// Windows, where Windows PowerShell 5.1 can't parse `||`; launch.ps1 (the --powershell form)
-// catches its own errors and exits 0.
+// something that prints other text (a Git LFS pointer runs `size`, which macOS has).
+//
+// .cursor/hooks.json is committed and shared, and Cursor runs the same command through sh on
+// macOS and Linux and through PowerShell on Windows, so the default command reads as a
+// different program to each (see dualCommand). The --powershell form is PowerShell only.
 func cursorCommand(event string, ps bool) string {
 	if ps {
-		return "powershell -NoProfile -ExecutionPolicy Bypass -File .sigdek/launch.ps1 hook cursor " + event
+		return psCommand(event)
 	}
-	return "sh .sigdek/launch.sh hook cursor " + event + " | grep '^{' || echo '" + strings.TrimSpace(string(adapter.CursorAllowFor(event))) + "'"
+	return dualCommand(event)
 }
 
-// Outdated names the agent tools whose SigDek hook commands in the repository at root aren't
-// the ones this version writes (an older sigdek init wrote them), so `sigdek init` should run
-// again. The --powershell form of the Cursor commands is current too.
+// psCommand is the --powershell form: launch.ps1 catches its own errors and exits 0.
+func psCommand(event string) string {
+	return "powershell -NoProfile -ExecutionPolicy Bypass -File .sigdek/launch.ps1 hook cursor " + event
+}
+
+// shCommand is the sh form that `sigdek init` wrote by default up to 0.1.0. It works on macOS
+// and Linux; Windows PowerShell 5.1 can't parse its `||`, so Cursor on Windows records nothing
+// with it (without blocking).
+func shCommand(event string) string {
+	return "sh .sigdek/launch.sh hook cursor " + event + " | grep '^{' || echo '" + safeAnswer(event) + "'"
+}
+
+func safeAnswer(event string) string {
+	return strings.TrimSpace(string(adapter.CursorAllowFor(event)))
+}
+
+// dualCommand is one command that sh and PowerShell (Windows PowerShell 5.1 and PowerShell 7)
+// each read as their own program, so the committed hooks work for Cursor on every platform:
+//
+//	set \'sigdek' ; <PowerShell part> ; $null = ' ; <sh part> #'
+//
+// Outside quotes, sh reads \' as a plain quote character, while PowerShell reads \ as a plain
+// character and ' as the start of a string. So sh runs `set` with one argument that holds the
+// PowerShell part, then runs the sh part and ignores the `#'` comment. PowerShell runs `set`
+// (Set-Variable) on a variable named \sigdek, runs the PowerShell part, and assigns the string
+// holding the sh part to $null. Neither part may contain a single quote.
+//
+// On Windows, Cursor runs `$OutputEncoding = [Text.Encoding]::UTF8; Get-Content payload.json
+// -Raw | & { $input | <command> }`, so the hook's input is piped into the first command: `set`
+// keeps it in ${\sigdek}, and the PowerShell part pipes it into launch.ps1, keeps the line that
+// starts with "{", and answers for itself when there is none.
+func dualCommand(event string) string {
+	safe := safeAnswer(event)
+	ps := "$a = ${\\sigdek} | " + psCommand(event) + ` | Where-Object { $_ -like "{*" } ; if ($a) { $a } else { "` +
+		strings.ReplaceAll(safe, `"`, `""`) + `" } ; exit 0`
+	sh := "sh .sigdek/launch.sh hook cursor " + event + ` | grep "^{" || echo "` + strings.ReplaceAll(safe, `"`, `\"`) + `"`
+	return `set \'sigdek' ; ` + ps + " ; $null = ' ; " + sh + " #'"
+}
+
+// Outdated names the agent tools whose SigDek hook commands in the repository at root are older
+// forms that can block or break the agent (an older sigdek init wrote them), so `sigdek init`
+// should run again. The --powershell form and the sh form of 0.1.0 are current enough; see
+// ShOnlyCursor for the latter.
 func Outdated(root string) []string {
 	var out []string
 	for _, c := range sigdekCommands(filepath.Join(root, ".claude", "settings.json"), true) {
@@ -89,12 +131,25 @@ func Outdated(root string) []string {
 		}
 	}
 	for _, c := range sigdekCommands(filepath.Join(root, ".cursor", "hooks.json"), false) {
-		if c.command != cursorCommand(c.event, false) && c.command != cursorCommand(c.event, true) {
+		if c.command != dualCommand(c.event) && c.command != psCommand(c.event) && c.command != shCommand(c.event) {
 			out = append(out, "cursor")
 			break
 		}
 	}
 	return out
+}
+
+// ShOnlyCursor says whether the repository's Cursor hooks are the sh-only form that `sigdek
+// init` wrote up to 0.1.0, which records nothing for Cursor on Windows; `sigdek init` again
+// writes the form that works there too.
+func ShOnlyCursor(root string) bool {
+	cmds := sigdekCommands(filepath.Join(root, ".cursor", "hooks.json"), false)
+	for _, c := range cmds {
+		if c.command != shCommand(c.event) {
+			return false
+		}
+	}
+	return len(cmds) > 0
 }
 
 type hookCommand struct{ event, command string }
@@ -140,17 +195,17 @@ func sigdekCommands(path string, grouped bool) []hookCommand {
 	return out
 }
 
-// WindowsNote is what init says on Windows after writing Cursor hooks without --powershell:
-// Cursor runs hooks through PowerShell there, where they can't run.
+// WindowsNote is what init says after writing Cursor hooks with --powershell: they run only
+// where PowerShell is installed, which the default hooks don't need.
 func WindowsNote(goos string, tools []string, ps bool) string {
-	if goos != "windows" || ps {
+	if !ps {
 		return ""
 	}
 	for _, t := range tools {
 		if t == "cursor" {
-			return "Note: Cursor on Windows runs hooks through PowerShell, and Windows PowerShell 5.1 can't run these\n" +
-				"commands, so Cursor records nothing there (it isn't blocked). If your team uses Cursor on Windows, run\n" +
-				"`sigdek init --powershell` instead; those Cursor hooks need PowerShell on every machine."
+			return "Note: these Cursor hooks run only where PowerShell is installed, so Cursor on macOS and Linux\n" +
+				"records nothing with them (it isn't blocked). The default `sigdek init` hooks work for Cursor on\n" +
+				"Windows, macOS and Linux."
 		}
 	}
 	return ""
@@ -701,6 +756,9 @@ for your team's SigDek evidence log. It was added by ` + "`sigdek init`" + `.
 - **launch.sh / launch.ps1** run the recorder. On first use they download the version
   pinned in recorder.lock and refuse it unless its SHA-256 matches. If anything fails,
   they exit quietly and your agent carries on.
+- The Cursor hook commands in .cursor/hooks.json read as one program to sh, which runs
+  launch.sh (macOS and Linux), and as another to PowerShell, which runs launch.ps1 (Cursor
+  on Windows). Neither part blocks the agent if the launcher is missing or broken.
 - **recorder.lock** pins the version and checksums. Update it with ` + "`sigdek init`" + ` from a newer release.
 - **.gitattributes** keeps the launchers' line endings the same on every checkout.
 

@@ -3,6 +3,7 @@ package initcmd
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/tektonsoftware/sigdek/internal/adapter"
 )
@@ -87,7 +89,7 @@ func TestInitMergesAndRemovesCleanly(t *testing.T) {
 		Hooks   map[string][]struct{ Command string } `json:"hooks"`
 	}
 	json.Unmarshal(cur, &cc)
-	if cc.Version != 1 || cc.Hooks["preToolUse"][0].Command != `sh .sigdek/launch.sh hook cursor preToolUse | grep '^{' || echo '{"permission":"allow"}'` {
+	if cc.Version != 1 || cc.Hooks["preToolUse"][0].Command != `set \'sigdek' ; $a = ${\sigdek} | powershell -NoProfile -ExecutionPolicy Bypass -File .sigdek/launch.ps1 hook cursor preToolUse | Where-Object { $_ -like "{*" } ; if ($a) { $a } else { "{""permission"":""allow""}" } ; exit 0 ; $null = ' ; sh .sigdek/launch.sh hook cursor preToolUse | grep "^{" || echo "{\"permission\":\"allow\"}" #'` {
 		t.Fatalf("cursor hooks: %s", cur)
 	}
 
@@ -828,6 +830,98 @@ func TestCursorCommandPassesOnTheAnswer(t *testing.T) {
 	}
 }
 
+// D10: on Windows, Cursor runs each hook command inside its own PowerShell wrapper, which pipes
+// the input in: `Get-Content payload.json -Raw | & { $input | <command> }`. The default command
+// then runs launch.ps1 with that input and passes on its answer, under Windows PowerShell 5.1
+// and PowerShell 7, and answers for itself when launch.ps1 is missing or broken. Elsewhere,
+// PowerShell 7 (where installed) reads the same command and, with no Windows PowerShell to run
+// launch.ps1, still answers.
+func TestCursorCommandsUnderCursorsPowerShellWrapper(t *testing.T) {
+	var shells []string
+	for _, ps := range []string{"powershell", "pwsh"} {
+		if _, err := exec.LookPath(ps); err == nil && (ps == "pwsh" || runtime.GOOS == "windows") {
+			shells = append(shells, ps)
+		}
+	}
+	if len(shells) == 0 {
+		t.Skip("no PowerShell installed")
+	}
+	exe, _ := os.Executable()
+	wrap := func(ps, root, command, stdin string, extra ...string) (string, int) {
+		t.Helper()
+		payload := filepath.Join(t.TempDir(), "payload.json")
+		os.WriteFile(payload, []byte(stdin), 0o644)
+		script := "$OutputEncoding = [System.Text.Encoding]::UTF8; Get-Content -LiteralPath '" + payload + "' -Raw | & { $input | " + command + " }"
+		u := utf16.Encode([]rune(script))
+		b := make([]byte, 2*len(u))
+		for i, c := range u {
+			b[2*i], b[2*i+1] = byte(c), byte(c>>8)
+		}
+		cmd := exec.Command(ps, "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(b))
+		cmd.Dir = root
+		cmd.Env = cleanEnv(extra...)
+		out, err := cmd.Output()
+		code := 0
+		if ee, ok := err.(*exec.ExitError); ok {
+			code = ee.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		return strings.ReplaceAll(string(out), "\r\n", "\n"), code
+	}
+	for _, ps := range shells {
+		root := t.TempDir()
+		if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}}); err != nil {
+			t.Fatal(err)
+		}
+		_, cursor := hookCommands(t, root)
+		home := t.TempDir()
+		for _, ev := range []string{"preToolUse", "beforeSubmitPrompt", "stop"} {
+			in := `{"hook_event_name":"` + ev + `","prompt":"caf\u00e9"}`
+			got := filepath.Join(t.TempDir(), "stdin")
+			out, code := wrap(ps, root, cursor[ev], in, "SIGDEK_HOME="+home, "SIGDEK_BIN="+exe, "SIGDEK_TEST_RECORDER=answer", "SIGDEK_TEST_STDIN="+got)
+			want := cursorSafe(ev) + "\n"
+			if runtime.GOOS == "windows" {
+				want = `{"permission":"deny","user_message":"recorder ran: hook cursor ` + ev + `"}` + "\n"
+				if b, _ := os.ReadFile(got); !strings.Contains(string(b), `"hook_event_name":"`+ev+`"`) {
+					t.Errorf("%s %s: the recorder got %q", ps, ev, b)
+				}
+			}
+			if code != 0 || out != want {
+				t.Errorf("%s %s: exit %d, stdout %q, want %q", ps, ev, code, out, want)
+			}
+		}
+		damage := map[string]func(dir string){
+			"no .sigdek folder": func(dir string) { os.RemoveAll(dir) },
+			"no launch.ps1":     func(dir string) { os.Remove(filepath.Join(dir, "launch.ps1")) },
+			"empty launch.ps1":  func(dir string) { os.WriteFile(filepath.Join(dir, "launch.ps1"), nil, 0o644) },
+			"launch.ps1 is a folder": func(dir string) {
+				os.Remove(filepath.Join(dir, "launch.ps1"))
+				os.Mkdir(filepath.Join(dir, "launch.ps1"), 0o755)
+			},
+			"conflict in launch.ps1": func(dir string) {
+				os.WriteFile(filepath.Join(dir, "launch.ps1"), []byte("<<<<<<< HEAD\n$x = 1\n=======\n$x = 2\n>>>>>>> b\n"), 0o644)
+			},
+			"launch.ps1 prints other text and exits 2": func(dir string) {
+				os.WriteFile(filepath.Join(dir, "launch.ps1"), []byte("Write-Output 'version https://git-lfs.github.com/spec/v1'\nexit 2\n"), 0o644)
+			},
+		}
+		for name, broke := range damage {
+			root := t.TempDir()
+			if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}}); err != nil {
+				t.Fatal(err)
+			}
+			broke(filepath.Join(root, ".sigdek"))
+			_, cursor := hookCommands(t, root)
+			for _, ev := range []string{"preToolUse", "beforeSubmitPrompt"} {
+				if out, code := wrap(ps, root, cursor[ev], `{"hook_event_name":"`+ev+`"}`, "SIGDEK_HOME="+home); code != 0 || out != cursorSafe(ev)+"\n" {
+					t.Errorf("%s, %s, %s: exit %d, stdout %q", ps, name, ev, code, out)
+				}
+			}
+		}
+	}
+}
+
 // QA3-REC-6: status asks for sigdek init again when a repository has hook commands an older
 // version wrote, and not for the current ones, --powershell included.
 func TestOutdatedHookCommands(t *testing.T) {
@@ -856,6 +950,19 @@ func TestOutdatedHookCommands(t *testing.T) {
 			t.Errorf("%s: %v", old, got)
 		}
 	}
+	// D10: the sh-only form of 0.1.0 doesn't block, so it isn't outdated; it records nothing for
+	// Cursor on Windows, which ShOnlyCursor says.
+	if ShOnlyCursor(root) {
+		t.Error("ShOnlyCursor with an older form")
+	}
+	v010 := `sh .sigdek/launch.sh hook cursor preToolUse | grep '^{' || echo '{\"permission\":\"allow\"}'`
+	write(".cursor/hooks.json", `{"version":1,"hooks":{"stop":[{"command":"./my-own-hook.sh"}],"preToolUse":[{"command":"`+v010+`"}]}}`)
+	if got := Outdated(root); len(got) != 0 || !ShOnlyCursor(root) {
+		t.Errorf("0.1.0 form: outdated %v, sh only %v", got, ShOnlyCursor(root))
+	}
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}}); err != nil || ShOnlyCursor(root) {
+		t.Errorf("init again: %v, sh only %v", err, ShOnlyCursor(root))
+	}
 	write(".cursor/hooks.json", `{"version":1,"hooks":{"stop":[{"command":"./my-own-hook.sh"}]}}`)
 	write(".claude/settings.json", `{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"sh \"$CLAUDE_PROJECT_DIR/.sigdek/launch.sh\" hook claude-code"}]}]}}`)
 	if got := Outdated(root); len(got) != 1 || got[0] != "claude-code" {
@@ -864,14 +971,17 @@ func TestOutdatedHookCommands(t *testing.T) {
 }
 
 func TestWindowsNote(t *testing.T) {
-	if WindowsNote("windows", []string{"claude-code", "cursor"}, false) == "" {
-		t.Error("no note for Cursor hooks written on Windows without --powershell")
+	// D10: the default Cursor hooks work on Windows too; only --powershell gets a note, on any OS.
+	for _, goos := range []string{"windows", "darwin"} {
+		if WindowsNote(goos, []string{"claude-code", "cursor"}, true) == "" {
+			t.Errorf("%s: no note for --powershell Cursor hooks", goos)
+		}
 	}
 	for _, c := range []struct {
 		goos  string
 		tools []string
 		ps    bool
-	}{{"windows", []string{"cursor"}, true}, {"windows", []string{"claude-code"}, false}, {"darwin", []string{"cursor"}, false}} {
+	}{{"windows", []string{"claude-code", "cursor"}, false}, {"windows", []string{"claude-code"}, true}, {"darwin", []string{"cursor"}, false}} {
 		if WindowsNote(c.goos, c.tools, c.ps) != "" {
 			t.Errorf("%+v: unexpected note", c)
 		}
