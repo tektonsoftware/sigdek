@@ -1093,7 +1093,7 @@ func TestCursorCommandsExecutionPolicyOnWindows(t *testing.T) {
 	}
 	// Mark of the Web: downloaded from the internet (zone 3).
 	if err := os.WriteFile(filepath.Join(root, ".sigdek", "launch.ps1")+":Zone.Identifier", []byte("[ZoneTransfer]\r\nZoneId=3\r\n"), 0o644); err != nil {
-		t.Skipf("can't mark the file (%v)", err)
+		t.Fatalf("can't mark the file as downloaded (%v)", err)
 	}
 	if out, in, code := run(); code != 0 || out != cursorSafe("preToolUse")+"\n" || in != "" {
 		t.Errorf("marked launch.ps1 under RemoteSigned: exit %d, stdout %q, recorder input %q; want it refused, with the safe answer", code, out, in)
