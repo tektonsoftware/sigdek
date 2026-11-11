@@ -1,0 +1,33 @@
+{
+  "version": "0.1.0",
+  "description": "Records what AI coding agents do on your machine, for your team's audit evidence.",
+  "homepage": "https://sigdek.com",
+  "license": "Apache-2.0",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/tektonsoftware/sigdek/releases/download/v0.1.0/sigdek_0.1.0_windows_amd64.exe#/sigdek.exe",
+      "hash": "690b4d2cc5245b0f7b7190b0d923d4edae9dc4495bf0d5064c7421eb1deb2471"
+    },
+    "arm64": {
+      "url": "https://github.com/tektonsoftware/sigdek/releases/download/v0.1.0/sigdek_0.1.0_windows_arm64.exe#/sigdek.exe",
+      "hash": "a873431c5124aabb6b0fc0e0a45a9886a18a4a37a1ebd5be6a11c412ac61961d"
+    }
+  },
+  "bin": "sigdek.exe",
+  "checkver": {
+    "github": "https://github.com/tektonsoftware/sigdek"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/tektonsoftware/sigdek/releases/download/v$version/sigdek_$version_windows_amd64.exe#/sigdek.exe"
+      },
+      "arm64": {
+        "url": "https://github.com/tektonsoftware/sigdek/releases/download/v$version/sigdek_$version_windows_arm64.exe#/sigdek.exe"
+      }
+    },
+    "hash": {
+      "url": "$baseurl/checksums.txt"
+    }
+  }
+}
