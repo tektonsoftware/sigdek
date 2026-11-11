@@ -899,6 +899,9 @@ func TestCursorCommandsUnderCursorsPowerShellWrapper(t *testing.T) {
 			shells = append(shells, ps)
 		}
 	}
+	if runtime.GOOS == "windows" && (len(shells) == 0 || shells[0] != "powershell") {
+		t.Fatal("Windows PowerShell isn't installed; this test must run under it on Windows")
+	}
 	if len(shells) == 0 {
 		t.Skip("no PowerShell installed")
 	}
@@ -1007,17 +1010,20 @@ func TestOutdatedHookCommands(t *testing.T) {
 		}
 	}
 	// D10: the sh-only form of 0.1.0 doesn't block, so it isn't outdated; it records nothing for
-	// Cursor on Windows, which ShOnlyCursor says.
-	if ShOnlyCursor(root) {
-		t.Error("ShOnlyCursor with an older form")
+	// Cursor on Windows, which CursorForm says.
+	if got := CursorForm(root); got != CursorOlder {
+		t.Errorf("CursorForm with an older form: %q", got)
 	}
 	v010 := `sh .sigdek/launch.sh hook cursor preToolUse | grep '^{' || echo '{\"permission\":\"allow\"}'`
 	write(".cursor/hooks.json", `{"version":1,"hooks":{"stop":[{"command":"./my-own-hook.sh"}],"preToolUse":[{"command":"`+v010+`"}]}}`)
-	if got := Outdated(root); len(got) != 0 || !ShOnlyCursor(root) {
-		t.Errorf("0.1.0 form: outdated %v, sh only %v", got, ShOnlyCursor(root))
+	if got := Outdated(root); len(got) != 0 || CursorForm(root) != CursorSh {
+		t.Errorf("0.1.0 form: outdated %v, form %q", got, CursorForm(root))
 	}
-	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}}); err != nil || ShOnlyCursor(root) {
-		t.Errorf("init again: %v, sh only %v", err, ShOnlyCursor(root))
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}}); err != nil || CursorForm(root) != CursorBoth {
+		t.Errorf("init again: %v, form %q", err, CursorForm(root))
+	}
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}, PowerShell: true}); err != nil || CursorForm(root) != CursorPowerShell {
+		t.Errorf("init --powershell: %v, form %q", err, CursorForm(root))
 	}
 	write(".cursor/hooks.json", `{"version":1,"hooks":{"stop":[{"command":"./my-own-hook.sh"}]}}`)
 	write(".claude/settings.json", `{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"sh \"$CLAUDE_PROJECT_DIR/.sigdek/launch.sh\" hook claude-code"}]}]}}`)

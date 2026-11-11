@@ -121,7 +121,7 @@ func dualCommand(event string) string {
 // Outdated names the agent tools whose SigDek hook commands in the repository at root are older
 // forms that can block or break the agent (an older sigdek init wrote them), so `sigdek init`
 // should run again. The --powershell form and the sh form of 0.1.0 are current enough; see
-// ShOnlyCursor for the latter.
+// CursorForm.
 func Outdated(root string) []string {
 	var out []string
 	for _, c := range sigdekCommands(filepath.Join(root, ".claude", "settings.json"), true) {
@@ -139,17 +139,39 @@ func Outdated(root string) []string {
 	return out
 }
 
-// ShOnlyCursor says whether the repository's Cursor hooks are the sh-only form that `sigdek
-// init` wrote up to 0.1.0, which records nothing for Cursor on Windows; `sigdek init` again
-// writes the form that works there too.
-func ShOnlyCursor(root string) bool {
-	cmds := sigdekCommands(filepath.Join(root, ".cursor", "hooks.json"), false)
-	for _, c := range cmds {
-		if c.command != shCommand(c.event) {
-			return false
+// The forms SigDek's Cursor hook commands take, as CursorForm names them.
+const (
+	CursorBoth       = "both"       // sh and PowerShell: the default since 0.1.1
+	CursorSh         = "sh"         // sh only: the default up to 0.1.0, which records nothing for Cursor on Windows
+	CursorPowerShell = "powershell" // PowerShell only: `sigdek init --powershell`
+	CursorMixed      = "mixed"      // current forms, but not all the same one
+	CursorOlder      = "older"      // a form an older sigdek init wrote, which can block
+)
+
+// CursorForm says which form the SigDek Cursor hook commands in the repository at root take,
+// or "" when it has none.
+func CursorForm(root string) string {
+	form := ""
+	for _, c := range sigdekCommands(filepath.Join(root, ".cursor", "hooks.json"), false) {
+		f := CursorOlder
+		switch c.command {
+		case dualCommand(c.event):
+			f = CursorBoth
+		case shCommand(c.event):
+			f = CursorSh
+		case psCommand(c.event):
+			f = CursorPowerShell
+		}
+		switch {
+		case f == CursorOlder:
+			return CursorOlder
+		case form == "":
+			form = f
+		case form != f:
+			form = CursorMixed
 		}
 	}
-	return len(cmds) > 0
+	return form
 }
 
 type hookCommand struct{ event, command string }
@@ -670,7 +692,12 @@ func Platform() string { return runtime.GOOS + "_" + runtime.GOARCH }
 
 // ReadLock reads a repository's .sigdek/recorder.lock.
 func ReadLock(root string) (Lock, error) {
-	b, err := os.ReadFile(filepath.Join(root, ".sigdek", "recorder.lock"))
+	return ReadLockFile(filepath.Join(root, ".sigdek", "recorder.lock"))
+}
+
+// ReadLockFile reads a recorder.lock: a repository's, or a plugin's scripts/recorder.lock.
+func ReadLockFile(path string) (Lock, error) {
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return Lock{}, err
 	}
