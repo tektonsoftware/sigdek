@@ -46,25 +46,53 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # A re-run (after a later step failed) keeps the release that's already out and uses its
-          # files from here on, so npm, the plugins and the manifests pin exactly those bytes.
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "::notice::$GITHUB_REF_NAME is already released; using its files."
-            rm -rf dist && gh release download "$GITHUB_REF_NAME" --dir dist
-            (cd dist && sha256sum --check checksums.txt)
-            # install.sh isn't in checksums.txt, so it's compared with this tag's copy instead,
-            # and attached if the release doesn't have it yet.
-            if [ ! -f dist/install.sh ]; then
-              gh release upload "$GITHUB_REF_NAME" install.sh
-            elif ! cmp -s install.sh dist/install.sh; then
-              echo "::error::The release's install.sh differs from this tag's. Check which is right; to restore the tag's, run: gh release upload $GITHUB_REF_NAME install.sh --clobber"
-              exit 1
-            fi
-          else
-            gh release create "$GITHUB_REF_NAME" dist/* \
-              --title "SigDek recorder $GITHUB_REF_NAME" \
+          # Releases are immutable: once one is published, its files can't be added, replaced or
+          # removed. So the release is made as a draft holding every file, checked, and only then
+          # published. A re-run (after a later step failed) reuses the release that's there and
+          # its files from here on, so npm, the plugins and the manifests pin exactly those bytes.
+          tag=$GITHUB_REF_NAME
+          if ! draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); then
+            gh release create "$tag" dist/* --draft \
+              --title "SigDek recorder $tag" \
               --notes "Binaries for macOS, Linux and Windows on x64 and arm64. Check them against checksums.txt, or let the launcher or install.sh do it."
+            draft=true
           fi
+          rm -rf release && mkdir release
+          if [ -n "$(gh release view "$tag" --json assets --jq '.assets[].name')" ]; then
+            gh release download "$tag" --dir release
+          fi
+          if [ "$draft" = true ]; then
+            # A draft still takes files: attach any that this run built and the draft lacks.
+            for f in dist/*; do
+              if [ ! -e "release/${f#dist/}" ]; then
+                gh release upload "$tag" "$f"
+                cp "$f" release/
+              fi
+            done
+          fi
+          if ! (cd release && sha256sum --check checksums.txt); then
+            if [ "$draft" = true ]; then
+              echo "::error::The draft release $tag has files that are missing or don't match its checksums.txt (listed above). Delete the wrong files from the draft (gh release delete-asset $tag <file>), or the whole draft, and run this again."
+            else
+              echo "::error::The published release $tag has files that are missing or don't match its checksums.txt (listed above). A published release can't change, so the fix is a new version."
+            fi
+            exit 1
+          fi
+          # install.sh isn't in checksums.txt, so it's compared with this tag's copy instead.
+          if ! cmp -s install.sh release/install.sh; then
+            if [ "$draft" = true ]; then
+              echo "::error::The draft release $tag has an install.sh that differs from this tag's. Check which is right; to use the tag's, delete the draft's (gh release delete-asset $tag install.sh) and run this again."
+            else
+              echo "::error::The published release $tag has no install.sh, or one that differs from this tag's. A published release can't change, so the fix is a new version."
+            fi
+            exit 1
+          fi
+          if [ "$draft" = true ]; then
+            gh release edit "$tag" --draft=false
+          else
+            echo "::notice::$tag is already published; using its files."
+          fi
+          rm -rf dist && mv release dist
       - name: Build the npm packages
         run: node scripts/npm-packages.mjs "${GITHUB_REF_NAME#v}" dist npm-out
       - uses: actions/setup-node@v4
