@@ -48,7 +48,7 @@ func init() {
 const usage = `sigdek records what AI coding agents do on this machine, for your team's evidence log.
 
 Usage:
-  sigdek init [--tools claude-code,cursor] [--windows | --powershell] [--offline] [--remove]
+  sigdek init [--tools claude-code,cursor] [--sh | --windows | --powershell] [--offline] [--remove]
                      Add SigDek's hooks to the current repository
   sigdek login       Connect this machine to your team (opens the browser)
   sigdek logout      Disconnect this machine
@@ -203,6 +203,7 @@ func userAgent() string {
 func runInit(home string, args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	tools := fs.String("tools", "claude-code,cursor", "which agent tools to record")
+	sh := fs.Bool("sh", false, "write sh-only Cursor hooks, for macOS and Linux; Cursor on Windows records nothing with them")
 	windows := fs.Bool("windows", false, "write Cursor hooks that run under sh and under PowerShell, so Cursor records on Windows too\n(the default when init runs on Windows)")
 	ps := fs.Bool("powershell", false, "write PowerShell-only Cursor hooks; they need a command named \"powershell\" (Windows PowerShell),\nso Cursor on macOS and Linux records nothing with them")
 	offline := fs.Bool("offline", false, "pin only this machine's platform instead of fetching release checksums")
@@ -210,8 +211,8 @@ func runInit(home string, args []string) error {
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
-	if *windows && *ps {
-		return errors.New("init: --windows and --powershell write different Cursor hooks; choose one")
+	if n := map[bool]int{true: 1}[*sh] + map[bool]int{true: 1}[*windows] + map[bool]int{true: 1}[*ps]; n > 1 {
+		return errors.New("init: --sh, --windows and --powershell write different Cursor hooks; choose one")
 	}
 	cwd, _ := os.Getwd()
 	info := gitinfo.Find(cwd)
@@ -220,6 +221,8 @@ func runInit(home string, args []string) error {
 	}
 	flagForm := ""
 	switch {
+	case *sh:
+		flagForm = initcmd.CursorSh
 	case *windows:
 		flagForm = initcmd.CursorBoth
 	case *ps:

@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/tektonsoftware/sigdek/internal/initcmd"
 )
 
 // QA1-SETUP-9, WALK-5: run through npm's launcher by npx, SigDek prints its next steps as
@@ -61,5 +63,36 @@ func TestNextStepsNameTheWaySigDekWasRun(t *testing.T) {
 	}
 	if out := run(nil, "init", "--offline"); !strings.Contains(out, "Next: run `sigdek login`") {
 		t.Errorf("init as an installed command:\n%s", out)
+	}
+}
+
+// QA2-SETUP-6: --sh goes back to the sh-only Cursor hooks, which a plain init keeps once the
+// project's hooks run under PowerShell; the three form flags exclude each other.
+func TestInitFormFlags(t *testing.T) {
+	dir, home := repoDir(t), sigdekHome(t)
+	init := func(args ...string) (string, error) {
+		cmd := exec.Command(binary, append([]string{"init", "--offline"}, args...)...)
+		cmd.Env = append(os.Environ(), "SIGDEK_HOME="+home)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	for _, step := range []struct {
+		args []string
+		form string
+	}{
+		{[]string{"--windows"}, initcmd.CursorBoth},
+		{nil, initcmd.CursorBoth},
+		{[]string{"--sh"}, initcmd.CursorSh},
+		{[]string{"--powershell"}, initcmd.CursorPowerShell},
+		{nil, initcmd.CursorBoth},
+		{[]string{"--sh"}, initcmd.CursorSh},
+	} {
+		if out, err := init(step.args...); err != nil || initcmd.CursorForm(dir) != step.form {
+			t.Fatalf("init %v: %v, form %q, want %q\n%s", step.args, err, initcmd.CursorForm(dir), step.form, out)
+		}
+	}
+	if out, err := init("--sh", "--windows"); err == nil || !strings.Contains(out, "choose one") {
+		t.Errorf("--sh --windows: %v\n%s", err, out)
 	}
 }

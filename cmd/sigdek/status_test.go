@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -243,7 +244,7 @@ func TestStatusForCursorHookForms(t *testing.T) {
 	c.project("claude-code,cursor", initcmd.CursorSh)
 	b, _ := os.ReadFile(p)
 	stop := `sh .sigdek/launch.sh hook cursor stop | grep '^{' || echo '{}'`
-	mixed := strings.Replace(string(b), strings.NewReplacer(`'`, `'`, `"`, `\"`).Replace(stop), "powershell -NoProfile -ExecutionPolicy RemoteSigned -File .sigdek/launch.ps1 hook cursor stop", 1)
+	mixed := strings.Replace(string(b), strings.NewReplacer(`'`, `'`, `"`, `\"`).Replace(stop), "powershell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File .sigdek/launch.ps1 hook cursor stop", 1)
 	if mixed == string(b) {
 		t.Fatal("couldn't mix the forms")
 	}
@@ -326,4 +327,79 @@ func TestStatusOutsideAnyProject(t *testing.T) {
 
 func jsonString(s string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
+}
+
+// QA2-SETUP-1: a hook file that isn't valid JSON, as after a bad merge, loads no hooks; status
+// says so for that file, gives a next step that works, and never says it records.
+func TestStatusForHookFilesThatDontParse(t *testing.T) {
+	conflict := func(path string) {
+		b, _ := os.ReadFile(path)
+		lines := strings.SplitAfter(string(b), "\n")
+		os.WriteFile(path, []byte(strings.Join(lines[:4], "")+"<<<<<<< HEAD\n"+lines[4]+"=======\n"+lines[4]+">>>>>>> feature\n"+strings.Join(lines[5:], "")), 0o644)
+	}
+	for _, goos := range []string{"darwin", "windows"} {
+		c := newStatusCase(t)
+		c.env.goos = goos
+		c.project("claude-code,cursor", initcmd.CursorBoth)
+		conflict(filepath.Join(c.root, ".cursor", "hooks.json"))
+		c.has(ccRecords, "[ ] .cursor/hooks.json isn't valid JSON (a merge conflict?), so Cursor loads no hooks from it",
+			"Next: fix it first (`sigdek init` won't change a file that isn't valid JSON)")
+		c.lacks(cursorRecord, "need PowerShell", "can't run this project's Cursor hooks", "Cursor: this project has no SigDek hooks")
+		conflict(filepath.Join(c.root, ".claude", "settings.json"))
+		c.has("[ ] .claude/settings.json isn't valid JSON (a merge conflict?), so Claude Code loads no hooks from it")
+		c.lacks(ccRecords, "No records on this machine yet")
+		// With SigDek's plugin on, its hooks still step aside there (launch.sh judges the file by
+		// its text), so nothing records at the top folder.
+		os.WriteFile(filepath.Join(c.env.claudeDir, "settings.json"), []byte(`{"enabledPlugins":{"sigdek@sigdek":true}}`), 0o644)
+		c.lacks("through SigDek's plugin")
+	}
+}
+
+// QA2-SETUP-2, -4: on Windows, Cursor's PowerShell forms run launch.ps1, so status checks that
+// file, and its downloaded-file mark, and says what it can't see.
+func TestStatusForLaunchPs1OnWindows(t *testing.T) {
+	c := newStatusCase(t)
+	c.env.goos = "windows"
+	c.env.gitBash = func() bool { return true }
+	c.project("claude-code,cursor", initcmd.CursorBoth)
+	ps1 := filepath.Join(c.root, ".sigdek", "launch.ps1")
+	c.has(cursorRecord, "On Windows they run .sigdek/launch.ps1 under PowerShell's RemoteSigned policy.",
+		"`Unblock-File .sigdek\\launch.ps1` removes the mark", "a network share or on Windows Server Core. Status can't see a refusal.")
+	// Marked as downloaded from the internet: on Windows the Zone.Identifier stream; elsewhere a
+	// file by that name stands in for it.
+	if err := os.WriteFile(ps1+":Zone.Identifier", []byte("[ZoneTransfer]\r\nZoneId=3\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.has("[ ] .sigdek/launch.ps1 is marked as downloaded from the internet, so PowerShell refuses to run it",
+		"`Unblock-File .sigdek\\launch.ps1`.")
+	c.lacks(cursorRecord)
+	os.WriteFile(ps1+":Zone.Identifier", []byte("[ZoneTransfer]\r\nZoneId=1\r\n"), 0o644) // the local intranet
+	c.has(cursorRecord)
+	os.Remove(ps1)
+	c.has("[ ] Cursor has hooks in this project, but on Windows they run .sigdek/launch.ps1, which is missing")
+	c.lacks(cursorRecord)
+	// Claude Code runs launch.sh through Git Bash, so it still records.
+	c.has(ccRecords)
+	// On macOS, launch.ps1 doesn't matter, and there's no PowerShell note.
+	c.env.goos = "darwin"
+	c.has(cursorRecord)
+	c.lacks("launch.ps1")
+}
+
+// QA2-SETUP-8: on macOS, a project whose Cursor hooks are partly sh-only gets the Windows note.
+func TestStatusNotesPartlyShOnlyCursorHooks(t *testing.T) {
+	c := newStatusCase(t)
+	c.env.goos = "darwin"
+	c.project("claude-code,cursor", initcmd.CursorBoth)
+	p := filepath.Join(c.root, ".cursor", "hooks.json")
+	var hooks struct {
+		Version int                                   `json:"version"`
+		Hooks   map[string][]struct{ Command string } `json:"hooks"`
+	}
+	b, _ := os.ReadFile(p)
+	json.Unmarshal(b, &hooks)
+	hooks.Hooks["stop"][0].Command = `sh .sigdek/launch.sh hook cursor stop | grep '^{' || echo '{}'`
+	b, _ = json.Marshal(hooks)
+	os.WriteFile(p, b, 0o644)
+	c.has(cursorRecord, "Cursor on Windows can't run some of these hooks.")
 }

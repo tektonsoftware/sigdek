@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1093,7 +1094,7 @@ func TestCursorCommandsExecutionPolicyOnWindows(t *testing.T) {
 	if out, in, code := run(); code != 0 || !strings.Contains(out, `"permission":"deny"`) || in == "" {
 		t.Fatalf("unmarked launch.ps1 under RemoteSigned: exit %d, stdout %q, recorder input %q", code, out, in)
 	}
-	policy, _ := encoded(t, "powershell", root, "powershell -NoProfile -ExecutionPolicy RemoteSigned -Command Get-ExecutionPolicy", "", cleanEnv())
+	policy, _ := encoded(t, "powershell", root, "powershell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command Get-ExecutionPolicy", "", cleanEnv())
 	if strings.TrimSpace(policy) != "RemoteSigned" {
 		t.Errorf("the effective policy is %q, not RemoteSigned", policy)
 	}
@@ -1200,8 +1201,8 @@ func TestChooseCursorForm(t *testing.T) {
 func TestCursorCommandForms(t *testing.T) {
 	for form, want := range map[string]string{
 		CursorSh:         `sh .sigdek/launch.sh hook cursor preToolUse | grep '^{' || echo '{"permission":"allow"}'`,
-		CursorPowerShell: `powershell -NoProfile -ExecutionPolicy RemoteSigned -File .sigdek/launch.ps1 hook cursor preToolUse`,
-		CursorBoth:       `set \'sigdek' ; $i = ${\sigdek} ; $a = if ($null -ne $i) { $i | powershell -NoProfile -ExecutionPolicy RemoteSigned -File .sigdek/launch.ps1 hook cursor preToolUse } else { powershell -NoProfile -ExecutionPolicy RemoteSigned -File .sigdek/launch.ps1 hook cursor preToolUse } ; $a = $a | Where-Object { $_ -like "{*" } ; if ($a) { $a } else { "{""permission"":""allow""}" } ; exit 0 ; $null = ' ; sh .sigdek/launch.sh hook cursor preToolUse | grep "^{" || echo "{\"permission\":\"allow\"}" #'`,
+		CursorPowerShell: `powershell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File .sigdek/launch.ps1 hook cursor preToolUse`,
+		CursorBoth:       `set \'sigdek' ; $i = ${\sigdek} ; $a = if ($null -ne $i) { $i | powershell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File .sigdek/launch.ps1 hook cursor preToolUse } else { powershell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File .sigdek/launch.ps1 hook cursor preToolUse } ; $a = $a | Where-Object { $_ -like "{*" } ; if ($a) { $a } else { "{""permission"":""allow""}" } ; exit 0 ; $null = ' ; sh .sigdek/launch.sh hook cursor preToolUse | grep "^{" || echo "{\"permission\":\"allow\"}" #'`,
 	} {
 		if got := cursorCommand("preToolUse", form); got != want {
 			t.Errorf("%s form:\n got %s\nwant %s", form, got, want)
@@ -1262,5 +1263,65 @@ func TestFormNote(t *testing.T) {
 	}
 	if n := FormNote(CursorBoth, "sigdek"); !strings.Contains(n, "on all three") {
 		t.Errorf("both: %q", n)
+	}
+}
+
+// QA2-SETUP-5: removing one tool's hooks rewrites .sigdek/README.md for what's left, and
+// removing the last takes it away with the launchers.
+func TestRemoveRewritesTheReadme(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}, CursorForm: CursorBoth}); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}, Remove: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(root, ".sigdek", "README.md"))
+	if strings.Contains(string(b), "## Cursor") || !strings.Contains(string(b), "makes Claude Code record what its agents do") || !strings.Contains(string(b), "## Claude Code") {
+		t.Errorf("README after removing Cursor:\n%s", b)
+	}
+	if !slices.Contains(changed, filepath.Join(root, ".sigdek", "README.md")) {
+		t.Errorf("the README isn't listed as changed: %v", changed)
+	}
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code"}, Remove: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".sigdek")); !os.IsNotExist(err) {
+		t.Errorf(".sigdek left after removing every hook: %v", err)
+	}
+}
+
+// QA2-SETUP-1: status reads a hook file the way the agent tools do: one that isn't valid JSON,
+// such as after a merge conflict, gives them no hooks, whatever its text says. init refuses to
+// change such a file, and works again once it's fixed.
+func TestReadHookFile(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, claude := range []bool{true, false} {
+		h := ReadHookFile(root, claude)
+		if h.Invalid || !h.Mentions || h.Commands == 0 {
+			t.Errorf("claude %v, as written: %+v", claude, h)
+		}
+	}
+	path := filepath.Join(root, ".cursor", "hooks.json")
+	good, _ := os.ReadFile(path)
+	lines := strings.SplitAfter(string(good), "\n")
+	conflicted := strings.Join(lines[:4], "") + "<<<<<<< HEAD\n" + lines[4] + "=======\n" + lines[4] + ">>>>>>> feature\n" + strings.Join(lines[5:], "")
+	os.WriteFile(path, []byte(conflicted), 0o644)
+	if h := ReadHookFile(root, false); !h.Invalid || !h.Mentions || h.Commands != 0 || h.Path != ".cursor/hooks.json" {
+		t.Errorf("conflicted: %+v", h)
+	}
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}}); err == nil || !strings.Contains(err.Error(), "not valid JSON") {
+		t.Errorf("init on a conflicted file: %v", err)
+	}
+	os.WriteFile(path, good, 0o644) // fixed, by keeping one side
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}}); err != nil {
+		t.Errorf("init once fixed: %v", err)
+	}
+	if h := ReadHookFile(t.TempDir(), true); h.Invalid || h.Mentions || h.Commands != 0 {
+		t.Errorf("no file: %+v", h)
 	}
 }

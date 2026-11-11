@@ -162,8 +162,10 @@ func lookAtFolder(e statusEnv) folder {
 	if inRepo {
 		f.root = root
 	}
-	cc := inRepo && fileHas(filepath.Join(root, ".claude", "settings.json"), "hook claude-code")
-	cu := inRepo && fileHas(filepath.Join(root, ".cursor", "hooks.json"), "hook cursor")
+	// The hook files as the agent tools read them: one that isn't valid JSON gives them no hooks.
+	ccFile, cuFile := initcmd.ReadHookFile(root, true), initcmd.ReadHookFile(root, false)
+	cc, cu := inRepo && ccFile.Commands > 0, inRepo && cuFile.Commands > 0
+	ccBad, cuBad := inRepo && ccFile.Invalid && ccFile.Mentions, inRepo && cuFile.Invalid && cuFile.Mentions
 	atRoot := inRepo && samePath(e.cwd, root)
 	pluginOn, where, key := pluginState(e.claudeDir, f.root)
 	if pluginOn {
@@ -177,7 +179,10 @@ func lookAtFolder(e statusEnv) folder {
 	if (cc || cu) && atRoot {
 		project = projectRecorder(e, root)
 	}
-	f.usesPlugin = pluginOn && !(cc && atRoot)
+	// The plugin's hooks step aside where the project's launcher and Claude Code hook file are,
+	// judging the file by its text, as launch.sh does.
+	stepsAside := atRoot && (cc || ccBad) && fileExists(filepath.Join(root, ".sigdek", "launch.sh"))
+	f.usesPlugin = pluginOn && !stepsAside
 	if f.usesPlugin {
 		plugin = pluginRecorder(e, f.root, key, where)
 	}
@@ -185,24 +190,28 @@ func lookAtFolder(e statusEnv) folder {
 	var ccOK, cuOK bool
 
 	// Claude Code.
+	if ccBad {
+		f.checks = append(f.checks, invalid(ccFile, "Claude Code"))
+	}
 	switch {
+	case f.usesPlugin && plugin.blocked:
+		f.checks = append(f.checks, todo("SigDek's Claude Code plugin is on here (turned on in "+where+"), but it records nothing", fixBelow))
+	case f.usesPlugin && (cc || ccBad):
+		ccOK = true
+		f.checks = append(f.checks, done("Claude Code records here, through SigDek's plugin (turned on in "+where+")",
+			"Started in "+top+", it uses the project's own hooks instead."))
+	case f.usesPlugin:
+		ccOK = true
+		f.checks = append(f.checks, done("Claude Code records here, through SigDek's plugin (turned on in "+where+")"))
+	case ccBad:
 	case cc && atRoot && project.blocked:
 		f.checks = append(f.checks, todo("Claude Code has hooks in this project (.claude/settings.json), but they record nothing", fixBelow))
 	case cc && atRoot:
 		ccOK = true
 		f.checks = append(f.checks, done("Claude Code records in this project, through its hooks in .claude/settings.json"))
-	case f.usesPlugin && plugin.blocked:
-		f.checks = append(f.checks, todo("SigDek's Claude Code plugin is on here (turned on in "+where+"), but it records nothing", fixBelow))
-	case cc && f.usesPlugin:
-		ccOK = true
-		f.checks = append(f.checks, done("Claude Code records here, through SigDek's plugin (turned on in "+where+")",
-			"Started in "+top+", it uses the project's own hooks instead."))
 	case cc:
 		f.checks = append(f.checks, todo("Claude Code records this project only when it starts in the project's top folder",
 			"Next: start Claude Code in "+top+"."))
-	case f.usesPlugin:
-		ccOK = true
-		f.checks = append(f.checks, done("Claude Code records here, through SigDek's plugin (turned on in "+where+")"))
 	case user:
 		ccOK = true
 		f.checks = append(f.checks, done("Claude Code records here, through hooks in "+tildePath(filepath.Join(e.claudeDir, "settings.json"))))
@@ -218,7 +227,12 @@ func lookAtFolder(e statusEnv) folder {
 	}
 
 	// Cursor.
+	if cuBad {
+		f.checks = append(f.checks, invalid(cuFile, "Cursor"))
+	}
 	forms := initcmd.CursorForms(root)
+	usesPS := forms[initcmd.CursorBoth] || forms[initcmd.CursorPowerShell]
+	ps1 := filepath.Join(root, ".sigdek", "launch.ps1")
 	runs := 0
 	for form := range forms {
 		windows := e.goos == "windows"
@@ -242,14 +256,32 @@ func lookAtFolder(e statusEnv) folder {
 		f.checks = append(f.checks, todo("Cursor records only some of what it does on this machine: some of this project's Cursor hooks", "can't run here. "+fixForms))
 	case cu && project.blocked:
 		f.checks = append(f.checks, todo("Cursor has hooks in this project (.cursor/hooks.json), but they record nothing", fixBelow))
-	case cu && forms[initcmd.CursorSh] && !forms[initcmd.CursorBoth]:
+	case cu && e.goos == "windows" && usesPS && !fileExists(ps1):
+		f.checks = append(f.checks, todo("Cursor has hooks in this project, but on Windows they run .sigdek/launch.ps1, which is missing",
+			"Next: bring the .sigdek folder back from git, or run `sigdek init --windows` again and commit it."))
+	case cu && e.goos == "windows" && usesPS && zoneMarked(ps1):
+		f.checks = append(f.checks, todo(".sigdek/launch.ps1 is marked as downloaded from the internet, so PowerShell refuses to run it",
+			"and Cursor records nothing here. Next: in PowerShell, in "+top+", run",
+			"`Unblock-File .sigdek\\launch.ps1`."))
+	case cu && e.goos == "windows" && usesPS:
 		cuOK = true
 		f.checks = append(f.checks, done("Cursor records in this project, through its hooks in .cursor/hooks.json",
-			"Cursor on Windows can't run these hooks. If anyone uses Cursor on Windows here, run",
+			"On Windows they run .sigdek/launch.ps1 under PowerShell's RemoteSigned policy. PowerShell refuses it",
+			"if the file is marked as downloaded (`Unblock-File .sigdek\\launch.ps1` removes the mark), and may on",
+			"a network share or on Windows Server Core. Status can't see a refusal."))
+	case cu && forms[initcmd.CursorSh]:
+		cuOK = true
+		some := "these hooks"
+		if len(forms) > 1 {
+			some = "some of these hooks"
+		}
+		f.checks = append(f.checks, done("Cursor records in this project, through its hooks in .cursor/hooks.json",
+			"Cursor on Windows can't run "+some+". If anyone uses Cursor on Windows here, run",
 			"`sigdek init --windows` and commit the change."))
 	case cu:
 		cuOK = true
 		f.checks = append(f.checks, done("Cursor records in this project, through its hooks in .cursor/hooks.json"))
+	case cuBad:
 	case ccOK && inRepo:
 		f.checks = append(f.checks, aside("Cursor: this project has no SigDek hooks for it",
 			"If you use Cursor here, run `sigdek init` in "+top+" and commit the files."))
@@ -609,6 +641,31 @@ func gitBashFound() bool {
 	}
 	_, err := exec.LookPath("bash")
 	return err == nil
+}
+
+// invalid is the item for a hook file that has SigDek's hooks but isn't valid JSON.
+func invalid(h initcmd.HookFile, tool string) check {
+	return todo(h.Path+" isn't valid JSON (a merge conflict?), so "+tool+" loads no hooks from it",
+		"Next: fix it first (`sigdek init` won't change a file that isn't valid JSON): look for lines that",
+		"start with <<<<<<<, ======= or >>>>>>>. Then run `sigdek init` again and commit the change.")
+}
+
+var zoneID = regexp.MustCompile(`(?m)^ZoneId=(\d+)`)
+
+// zoneMarked says whether Windows marked a file as downloaded from the internet (the zone in its
+// Zone.Identifier stream is 3, Internet, or 4, Restricted), which PowerShell's RemoteSigned
+// policy refuses to run unsigned.
+func zoneMarked(path string) bool {
+	b, err := os.ReadFile(path + ":Zone.Identifier")
+	if err != nil {
+		return false
+	}
+	m := zoneID.FindSubmatch(b)
+	if m == nil {
+		return false
+	}
+	n, _ := strconv.Atoi(string(m[1]))
+	return n >= 3
 }
 
 func recent(path string, now time.Time, within time.Duration) bool {
