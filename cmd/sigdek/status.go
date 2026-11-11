@@ -76,8 +76,7 @@ func writeStatus(w io.Writer, e statusEnv) {
 	if dev.SignedIn() {
 		checks = append(checks, uploadCheck(e, dev, st, head, headErr, health))
 	} else if headErr == nil && head.Seq == 0 && f.records {
-		checks = append(checks, todo("No records on this machine yet",
-			"Next: start Claude Code or Cursor here and give the agent a task."))
+		checks = append(checks, todo("No records on this machine yet", "Next: start "+f.agents+" here and give the agent a task."))
 	}
 	for _, c := range checks {
 		fmt.Fprintf(w, "[%s] %s\n", c.mark, c.text)
@@ -150,8 +149,9 @@ type folder struct {
 	repoHooks  bool   // the repository has SigDek's hooks and its launcher
 	plugin     string // the enabledPlugins key that turns SigDek's plugin on here, if any
 	pluginOn   bool
-	usesPlugin bool // Claude Code records here through the plugin
-	records    bool // something records here, as far as status can tell
+	usesPlugin bool   // Claude Code records here through the plugin
+	records    bool   // something records here, as far as status can tell
+	agents     string // the agent tools that record here, for the next step
 }
 
 func lookAtFolder(e statusEnv) folder {
@@ -222,6 +222,10 @@ func lookAtFolder(e statusEnv) folder {
 		f.checks = append(f.checks, aside("Cursor: this folder isn't in a git repository, so it has no SigDek hooks for Cursor"))
 	}
 	f.records = ccRecords || (cu && atRoot)
+	f.agents = "Claude Code or Cursor"
+	if !cu {
+		f.agents = "Claude Code"
+	}
 	if len(f.checks) == 0 {
 		next := "Next: for your team's project, run `sigdek init` in its top folder and commit the files; for"
 		f.checks = append(f.checks, todo("Nothing records Claude Code or Cursor in this folder yet",
