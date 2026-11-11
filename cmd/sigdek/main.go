@@ -253,7 +253,7 @@ func runInit(home string, args []string) error {
 		}
 		fmt.Printf("Add them anyway with `git add -f %s`, or change the rule that ignores them\n(`git check-ignore -v %s` names it).\n", strings.Join(add, " "), ignored[0])
 	}
-	if note := initcmd.WindowsNote(runtime.GOOS, toolList, *ps); note != "" {
+	if note := initcmd.PowerShellNote(toolList, *ps); note != "" {
 		fmt.Println("\n" + note)
 	}
 	if version == "dev" {

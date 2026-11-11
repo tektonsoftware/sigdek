@@ -1032,20 +1032,12 @@ func TestOutdatedHookCommands(t *testing.T) {
 	}
 }
 
-func TestWindowsNote(t *testing.T) {
-	// D10: the default Cursor hooks work on Windows too; only --powershell gets a note, on any OS.
-	for _, goos := range []string{"windows", "darwin"} {
-		if WindowsNote(goos, []string{"claude-code", "cursor"}, true) == "" {
-			t.Errorf("%s: no note for --powershell Cursor hooks", goos)
-		}
+func TestPowerShellNote(t *testing.T) {
+	// D10: the default Cursor hooks work on Windows too; only --powershell gets a note.
+	if PowerShellNote([]string{"claude-code", "cursor"}, true) == "" {
+		t.Error("no note for --powershell Cursor hooks")
 	}
-	for _, c := range []struct {
-		goos  string
-		tools []string
-		ps    bool
-	}{{"windows", []string{"claude-code", "cursor"}, false}, {"windows", []string{"claude-code"}, true}, {"darwin", []string{"cursor"}, false}} {
-		if WindowsNote(c.goos, c.tools, c.ps) != "" {
-			t.Errorf("%+v: unexpected note", c)
-		}
+	if PowerShellNote([]string{"claude-code", "cursor"}, false) != "" || PowerShellNote([]string{"claude-code"}, true) != "" {
+		t.Error("a note without --powershell Cursor hooks")
 	}
 }

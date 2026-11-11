@@ -217,9 +217,9 @@ func sigdekCommands(path string, grouped bool) []hookCommand {
 	return out
 }
 
-// WindowsNote is what init says after writing Cursor hooks with --powershell: they run only
+// PowerShellNote is what init says after writing Cursor hooks with --powershell: they run only
 // where PowerShell is installed, which the default hooks don't need.
-func WindowsNote(goos string, tools []string, ps bool) string {
+func PowerShellNote(tools []string, ps bool) string {
 	if !ps {
 		return ""
 	}
