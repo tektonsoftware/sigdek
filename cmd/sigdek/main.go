@@ -48,7 +48,7 @@ func init() {
 const usage = `sigdek records what AI coding agents do on this machine, for your team's evidence log.
 
 Usage:
-  sigdek init [--tools claude-code,cursor] [--powershell] [--offline] [--remove]
+  sigdek init [--tools claude-code,cursor] [--windows | --powershell] [--offline] [--remove]
                      Add SigDek's hooks to the current repository
   sigdek login       Connect this machine to your team (opens the browser)
   sigdek logout      Disconnect this machine
@@ -125,9 +125,27 @@ func main() {
 		return
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "sigdek: %v\n", err)
+		fmt.Fprintf(os.Stderr, "sigdek: %s\n", named(err.Error()))
 		os.Exit(1)
 	}
+}
+
+// command is how the person runs SigDek: "npx sigdek" when npm's launcher says npx started it
+// (npm/sigdek/bin/sigdek.js sets SIGDEK_VIA), otherwise "sigdek". Next steps are printed the same
+// way, so they work when copied.
+func command() string {
+	if os.Getenv("SIGDEK_VIA") == "npx" {
+		return "npx sigdek"
+	}
+	return "sigdek"
+}
+
+// named writes the `sigdek …` commands in a message the way the person runs SigDek.
+func named(s string) string {
+	if c := command(); c != "sigdek" {
+		return strings.ReplaceAll(s, "`sigdek ", "`"+c+" ")
+	}
+	return s
 }
 
 // noArgs is parseFlags for a command that takes no options or arguments.
@@ -185,20 +203,32 @@ func userAgent() string {
 func runInit(home string, args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	tools := fs.String("tools", "claude-code,cursor", "which agent tools to record")
-	ps := fs.Bool("powershell", false, "write Cursor hooks that run under PowerShell (Windows teams)")
+	windows := fs.Bool("windows", false, "write Cursor hooks that run under sh and under PowerShell, so Cursor records on Windows too\n(the default when init runs on Windows)")
+	ps := fs.Bool("powershell", false, "write PowerShell-only Cursor hooks; they need a command named \"powershell\" (Windows PowerShell),\nso Cursor on macOS and Linux records nothing with them")
 	offline := fs.Bool("offline", false, "pin only this machine's platform instead of fetching release checksums")
 	remove := fs.Bool("remove", false, "remove SigDek's hooks from this repository")
 	if err := parseFlags(fs, args); err != nil {
 		return err
+	}
+	if *windows && *ps {
+		return errors.New("init: --windows and --powershell write different Cursor hooks; choose one")
 	}
 	cwd, _ := os.Getwd()
 	info := gitinfo.Find(cwd)
 	if _, err := os.Stat(filepath.Join(info.Root, ".git")); err != nil {
 		return errors.New("run `sigdek init` inside a git repository")
 	}
+	flagForm := ""
+	switch {
+	case *windows:
+		flagForm = initcmd.CursorBoth
+	case *ps:
+		flagForm = initcmd.CursorPowerShell
+	}
+	form := initcmd.ChooseCursorForm(info.Root, runtime.GOOS, flagForm)
 	changed, err := initcmd.Run(initcmd.Options{
 		Root: info.Root, Version: version, Tools: []string{*tools},
-		PowerShell: *ps, Offline: *offline, Remove: *remove, Out: os.Stdout,
+		CursorForm: form, Offline: *offline, Remove: *remove, Out: os.Stdout,
 	})
 	rel := func(p string) string {
 		r, _ := filepath.Rel(info.Root, p)
@@ -253,17 +283,19 @@ func runInit(home string, args []string) error {
 		}
 		fmt.Printf("Add them anyway with `git add -f %s`, or change the rule that ignores them\n(`git check-ignore -v %s` names it).\n", strings.Join(add, " "), ignored[0])
 	}
-	if note := initcmd.PowerShellNote(toolList, *ps); note != "" {
-		fmt.Println("\n" + note)
+	for _, t := range toolList {
+		if note := initcmd.FormNote(form, command()); t == "cursor" && note != "" {
+			fmt.Println("\n" + note)
+		}
 	}
 	if version == "dev" {
 		fmt.Println("\nThis is a development build, so the launcher can't download it. Set SIGDEK_BIN to this binary to test.")
 	} else if lock, err := initcmd.ReadLock(info.Root); err == nil && len(lock.Sums) < len(initcmd.Targets) {
 		fmt.Printf("\nWarning: recorder.lock pins SigDek %s for %s only, because of --offline. Teammates on any other\n"+
-			"platform won't be recorded. Run `sigdek init` again with network access to pin every platform.\n",
+			"platform won't be recorded. Run `"+command()+" init` again with network access to pin every platform.\n",
 			version, strings.ReplaceAll(initcmd.Platform(), "_", "/"))
 	}
-	fmt.Println("\nNext: run `sigdek login` to connect this machine to your team. Until then, records stay on this machine.")
+	fmt.Println("\nNext: run `" + command() + " login` to connect this machine to your team. Until then, records stay on this machine.")
 	return nil
 }
 
@@ -399,7 +431,7 @@ func runLog(home string, args []string) error {
 		return err
 	}
 	if len(lines) == 0 {
-		fmt.Println("No records yet. Run `sigdek init` in a repository, then use Claude Code or Cursor there.")
+		fmt.Println(named("No records yet. Run `sigdek init` in a repository, then use Claude Code or Cursor there."))
 		return nil
 	}
 	w := bufio.NewWriter(os.Stdout)

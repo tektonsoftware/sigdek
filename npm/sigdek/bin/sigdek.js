@@ -21,7 +21,11 @@ try {
   process.exit(1);
 }
 
-const result = spawnSync(bin, process.argv.slice(2), { stdio: "inherit" });
+// Started by npx (npm exec)? Then the recorder prints its next steps as `npx sigdek …`, so they
+// work when copied; an installed `sigdek` command prints `sigdek …`.
+const npx = process.env.npm_lifecycle_event === "npx" || process.env.npm_command === "exec";
+const env = npx ? { ...process.env, SIGDEK_VIA: "npx" } : process.env;
+const result = spawnSync(bin, process.argv.slice(2), { stdio: "inherit", env });
 if (result.error) {
   console.error(`sigdek: ${result.error.message}`);
   process.exit(1);

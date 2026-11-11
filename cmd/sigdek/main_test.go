@@ -389,7 +389,8 @@ func TestCLICommands(t *testing.T) {
 	if out := runCLI("init", "--offline"); !strings.Contains(out, ".claude/settings.json") || !strings.Contains(out, ".sigdek/launch.sh") {
 		t.Fatalf("init: %s", out)
 	}
-	if out := runCLI("status"); !strings.Contains(out, "[x] Claude Code records in this project") || !strings.Contains(out, "[x] Cursor records in this project") {
+	// A development build pins "dev", which no launcher can download (QA1-SETUP-1).
+	if out := runCLI("status"); !strings.Contains(out, "Claude Code has hooks in this project") || !strings.Contains(out, "Cursor has hooks in this project") || !strings.Contains(out, "development build") {
 		t.Fatalf("status after init: %s", out)
 	}
 }
@@ -612,7 +613,12 @@ func TestStatusNamesOldHookCommands(t *testing.T) {
 	// QA3-REC-6: the Cursor commands before they answered for a launcher that prints nothing.
 	cur := filepath.Join(dir, ".cursor", "hooks.json")
 	b, _ := os.ReadFile(cur)
-	os.WriteFile(cur, []byte(strings.ReplaceAll(string(b), `.sigdek/launch.sh hook cursor stop | grep \"^{\" || echo`, `.sigdek/launch.sh hook cursor stop || echo`)), 0o644)
+	older := strings.NewReplacer(`.sigdek/launch.sh hook cursor stop | grep \"^{\" || echo`, `.sigdek/launch.sh hook cursor stop || echo`,
+		`.sigdek/launch.sh hook cursor stop | grep '^{' || echo`, `.sigdek/launch.sh hook cursor stop || echo`).Replace(string(b))
+	if older == string(b) {
+		t.Fatalf("no Cursor stop command to make old:\n%s", b)
+	}
+	os.WriteFile(cur, []byte(older), 0o644)
 	if out := status(); !strings.Contains(out, "written by an older sigdek init") {
 		t.Fatalf("old Cursor commands not named:\n%s", out)
 	}

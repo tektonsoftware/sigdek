@@ -47,6 +47,16 @@ func (c *statusCase) has(want ...string) string {
 	return out
 }
 
+func (c *statusCase) lacks(not ...string) {
+	c.t.Helper()
+	out := c.out()
+	for _, n := range not {
+		if strings.Contains(out, n) {
+			c.t.Errorf("status has %q:\n%s", n, out)
+		}
+	}
+}
+
 // recorder is a stand-in binary and its checksum.
 var recorderBytes = []byte("#!/bin/sh\nexit 0\n")
 
@@ -62,12 +72,21 @@ func binName() string {
 	return "sigdek"
 }
 
-// project sets up SigDek's hooks, pinned to 7.0.0 for this platform.
-func (c *statusCase) project(ps bool) {
-	if _, err := initcmd.Run(initcmd.Options{Root: c.root, Version: "dev", Tools: []string{"claude-code,cursor"}, PowerShell: ps}); err != nil {
+// project sets up SigDek's hooks for tools, with Cursor's in a form, pinned to 7.0.0 for this
+// platform.
+func (c *statusCase) project(tools, form string) {
+	if _, err := initcmd.Run(initcmd.Options{Root: c.root, Version: "dev", Tools: []string{tools}, CursorForm: form}); err != nil {
 		c.t.Fatal(err)
 	}
-	lock := "version=7.0.0\nurl=https://example.invalid\n" + runtime.GOOS + "_" + runtime.GOARCH + "=" + recorderSum() + "\n"
+	var sums []string
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		sums = append(sums, goos+"_"+runtime.GOARCH+"="+recorderSum())
+	}
+	c.lock("7.0.0", sums...)
+}
+
+func (c *statusCase) lock(version string, sums ...string) {
+	lock := "version=" + version + "\nurl=https://example.invalid\n" + strings.Join(sums, "\n") + "\n"
 	os.WriteFile(filepath.Join(c.root, ".sigdek", "recorder.lock"), []byte(lock), 0o644)
 }
 
@@ -85,33 +104,51 @@ func (c *statusCase) health(json string) {
 	os.WriteFile(filepath.Join(config.StateDir(c.env.home), "upload-health.json"), []byte(json), 0o600)
 }
 
+const (
+	ccRecords    = "[x] Claude Code records in this project, through its hooks in .claude/settings.json"
+	cursorRecord = "[x] Cursor records in this project, through its hooks in .cursor/hooks.json"
+	ccBlocked    = "[ ] Claude Code has hooks in this project (.claude/settings.json), but they record nothing"
+	cuBlocked    = "[ ] Cursor has hooks in this project (.cursor/hooks.json), but they record nothing"
+)
+
 func TestStatusForATeamProject(t *testing.T) {
 	c := newStatusCase(t)
-	c.project(false)
+	c.project("claude-code,cursor", initcmd.CursorBoth)
 	out := c.has(
-		"[x] Claude Code records in this project, through its hooks in .claude/settings.json",
-		"[x] Cursor records in this project, through its hooks in .cursor/hooks.json",
+		ccRecords, cursorRecord,
 		"[ ] SigDek 7.0.0, the recorder this project pins, isn't downloaded yet",
 		"It downloads, and is checked, the first time Claude Code or Cursor runs here.",
 		"[ ] This machine isn't connected to a team, so its records stay on it\n    Next: run `sigdek login`.",
-		"[ ] No records on this machine yet",
+		"[ ] No records on this machine yet\n    Next: start Claude Code or Cursor here",
 	)
 	if strings.Contains(out, "Windows") {
-		t.Errorf("the default Cursor hooks work on Windows:\n%s", out)
+		t.Errorf("the sh-and-PowerShell hooks work on Windows:\n%s", out)
 	}
 
-	// Downloading, then failing, then downloaded but not matching, then good.
+	// The recorder downloading: the hooks record once it's done.
 	dir := filepath.Join(c.env.home, "bin", "7.0.0")
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, ".downloading"), nil, 0o644)
-	c.has("[ ] SigDek 7.0.0, the recorder this project pins, is downloading")
+	c.has(ccRecords, "[ ] SigDek 7.0.0, the recorder this project pins, is downloading")
 	os.Remove(filepath.Join(dir, ".downloading"))
+
+	// QA1-SETUP-1: while downloads fail, nothing records, and status says so first.
 	os.WriteFile(filepath.Join(dir, ".download-failed"), []byte("3 "+recorderSum()+"\n"), 0o644)
-	c.has("isn't downloaded: 3 downloads failed, the last just now", "Next: check that this machine can reach github.com.")
+	c.has(ccBlocked, cuBlocked, "Nothing is recorded until the problem below is fixed.",
+		"isn't downloaded: 3 downloads failed, the last just now", "Next: check that this machine can reach github.com.")
+	c.lacks(ccRecords, cursorRecord, "No records on this machine yet")
+
+	// QA1-SETUP-11: a cached recorder the launcher can't run, as the launcher sees it.
+	c.cached(dir, recorderBytes)
+	if runtime.GOOS != "windows" {
+		os.Chmod(filepath.Join(dir, binName()), 0o644)
+		c.has(ccRecords, "[ ] SigDek 7.0.0, the recorder this project pins, is downloaded but can't be run (it isn't executable)")
+		os.Chmod(filepath.Join(dir, binName()), 0o755)
+	}
 	c.cached(dir, []byte("something else"))
 	c.has("[ ] The downloaded SigDek 7.0.0 doesn't match the checksum this project pins, yet the launcher runs it")
 	c.cached(dir, recorderBytes)
-	c.has("[x] SigDek 7.0.0, the recorder this project pins, is downloaded and matches its checksum")
+	c.has(ccRecords, "[x] SigDek 7.0.0, the recorder this project pins, is downloaded and matches its checksum")
 
 	// SIGDEK_CACHE moves the cache, as it does for the launchers.
 	c.env.cache = t.TempDir()
@@ -119,6 +156,16 @@ func TestStatusForATeamProject(t *testing.T) {
 	c.cached(filepath.Join(c.env.cache, "7.0.0"), recorderBytes)
 	c.has("[x] SigDek 7.0.0, the recorder this project pins, is downloaded")
 	c.env.cache = ""
+
+	// QA1-SETUP-1: no build for this platform, or a development pin: nothing records.
+	c.lock("7.0.0", "plan9_amd64="+recorderSum())
+	c.has(ccBlocked, cuBlocked, "recorder.lock has no build of SigDek 7.0.0 for "+runtime.GOOS+"/"+runtime.GOARCH)
+	c.lock("dev", runtime.GOOS+"_"+runtime.GOARCH+"="+recorderSum())
+	c.has(ccBlocked, "development build of SigDek")
+	c.env.bin = os.Args[0] // SIGDEK_BIN runs a build of your own instead
+	c.has(ccRecords, "SIGDEK_BIN is set, so hooks started from here run ")
+	c.env.bin = ""
+	c.lock("7.0.0", runtime.GOOS+"_"+runtime.GOARCH+"="+recorderSum())
 
 	// Connected, with uploads in each state.
 	c.signIn()
@@ -137,8 +184,15 @@ func TestStatusForATeamProject(t *testing.T) {
 	if strings.Contains(out, "[ ]") {
 		t.Errorf("everything works, but status lists something to do:\n%s", out)
 	}
-	c.health(`{"last_try":"` + time.Now().Add(-2*time.Minute).UTC().Format(time.RFC3339) + `","last_error":"ingest returned 503"}`)
-	c.has("[ ] The last upload, 2 min ago, failed: ingest returned 503", "Next: run `sigdek flush` to try again now; nothing is waiting.")
+	c.health(`{"last_try":"` + time.Now().Add(-2*time.Minute).UTC().Format(time.RFC3339) + `","last_error":"ingest returned 503","retry_after":"` + time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `"}`)
+	c.has("[ ] Uploads wait until ", "Next: `sigdek flush` tries now")
+
+	// QA1-SETUP-13: after the server rejected the token, the only next step is to sign in again.
+	os.MkdirAll(config.StateDir(c.env.home), 0o700)
+	os.WriteFile(config.TokenRejected(c.env.home), nil, 0o600)
+	c.has("but the server rejected this machine's token", "Next: run `sigdek login` again.", "[ ] Uploads have stopped until this machine signs in again")
+	c.lacks("sigdek flush")
+	os.Remove(config.TokenRejected(c.env.home))
 
 	// Started in a subfolder, the project's hooks don't run.
 	sub := filepath.Join(c.root, "packages", "web")
@@ -148,80 +202,122 @@ func TestStatusForATeamProject(t *testing.T) {
 		"[ ] Cursor records this project only when the project's top folder is its workspace")
 	c.env.cwd = c.root
 
-	// A missing launcher.
+	// QA1-SETUP-1: a missing launcher; nothing records, and there's no "start the agent" step.
 	os.Remove(filepath.Join(c.root, ".sigdek", "launch.sh"))
-	c.has("[ ] This project's hooks run .sigdek/launch.sh, which is missing, so they record nothing")
+	c.has(ccBlocked, cuBlocked, "[ ] This project's hooks run .sigdek/launch.sh, which is missing")
+}
+
+// QA1-SETUP-10: a Cursor-only project's next step names Cursor alone.
+func TestStatusForACursorOnlyProject(t *testing.T) {
+	c := newStatusCase(t)
+	c.project("cursor", initcmd.CursorBoth)
+	c.has(cursorRecord, "Next: start Cursor here and give the agent a task.")
+	c.lacks("Claude Code or Cursor here")
 }
 
 func TestStatusForCursorHookForms(t *testing.T) {
 	c := newStatusCase(t)
-	c.project(false)
-	// The sh-only hooks `sigdek init` wrote up to 0.1.0.
+	c.project("claude-code,cursor", initcmd.CursorSh)
+	c.env.goos = "darwin"
+	c.has(cursorRecord, "Cursor on Windows can't run these hooks. If anyone uses Cursor on Windows here, run",
+		"`sigdek init --windows` and commit the change.")
+	c.env.goos = "windows"
+	c.has("[ ] Cursor records nothing on this machine: Cursor on Windows can't run this project's Cursor hooks",
+		"Next: run `sigdek init --windows` in ")
+	// The sh form 0.1.0 wrote is the same.
 	p := filepath.Join(c.root, ".cursor", "hooks.json")
 	os.WriteFile(p, []byte(`{"version":1,"hooks":{"stop":[{"command":"sh .sigdek/launch.sh hook cursor stop | grep '^{' || echo '{}'"}]}}`), 0o644)
-	if initcmd.CursorForm(c.root) != initcmd.CursorSh {
-		t.Fatalf("form %q", initcmd.CursorForm(c.root))
-	}
-	c.env.goos = "darwin"
-	c.has("[x] Cursor records in this project", "Cursor on Windows can't run these hooks. If teammates use Cursor on Windows, run `sigdek init`")
-	c.env.goos = "windows"
-	c.has("[ ] Cursor records nothing on this machine: Cursor on Windows can't run this project's hooks")
+	c.has("Cursor on Windows can't run this project's Cursor hooks")
 
-	// --powershell hooks, read on macOS or Linux.
-	c.project(true)
+	// --powershell hooks, read on macOS or Linux; 0.1.0's, with Bypass, too.
+	c.project("claude-code,cursor", initcmd.CursorPowerShell)
 	c.env.goos = "linux"
 	c.has("[ ] Cursor records nothing on this machine: this project's Cursor hooks need PowerShell")
+	os.WriteFile(p, []byte(`{"version":1,"hooks":{"stop":[{"command":"powershell -NoProfile -ExecutionPolicy Bypass -File .sigdek/launch.ps1 hook cursor stop"}]}}`), 0o644)
+	c.has("this project's Cursor hooks need PowerShell")
+	c.lacks("older sigdek init")
 	c.env.goos = "windows"
-	c.has("[x] Cursor records in this project")
+	c.has(cursorRecord)
+
+	// QA1-SETUP-12: mixed forms, one event left in the PowerShell-only form.
+	c.project("claude-code,cursor", initcmd.CursorSh)
+	b, _ := os.ReadFile(p)
+	stop := `sh .sigdek/launch.sh hook cursor stop | grep '^{' || echo '{}'`
+	mixed := strings.Replace(string(b), strings.NewReplacer(`'`, `'`, `"`, `\"`).Replace(stop), "powershell -NoProfile -ExecutionPolicy RemoteSigned -File .sigdek/launch.ps1 hook cursor stop", 1)
+	if mixed == string(b) {
+		t.Fatal("couldn't mix the forms")
+	}
+	os.WriteFile(p, []byte(mixed), 0o644)
+	c.env.goos = "darwin"
+	c.has("[ ] Cursor records only some of what it does on this machine")
+	c.lacks(cursorRecord)
 
 	// On Windows, Claude Code needs Git Bash to run hooks.
+	c.project("claude-code,cursor", initcmd.CursorBoth)
+	c.env.goos = "windows"
 	c.env.gitBash = func() bool { return false }
 	c.has("[ ] Claude Code on Windows runs hooks through Git Bash, and it isn't installed here")
 	c.env.gitBash = func() bool { return true }
-	if out := c.out(); strings.Contains(out, "Git Bash") {
-		t.Errorf("Git Bash named while it's there:\n%s", out)
-	}
+	c.lacks("Git Bash")
 }
 
 func TestStatusForThePlugin(t *testing.T) {
 	c := newStatusCase(t)
 	os.WriteFile(filepath.Join(c.env.claudeDir, "settings.json"), []byte(`{"enabledPlugins":{"sigdek@sigdek":true}}`), 0o644)
+	// QA1-SETUP-14: without Claude Code's list of installed plugins, status doesn't say which
+	// version the plugin runs.
+	c.cached(filepath.Join(c.env.claudeDir, "plugins", "data", "sigdek-sigdek", "6.0.0"), recorderBytes)
 	out := c.has(
 		"[x] Claude Code records here, through SigDek's plugin (turned on in ",
 		"[-] Cursor: this project has no SigDek hooks for it",
-		"[ ] The recorder SigDek's plugin runs isn't downloaded yet",
-		"It downloads, and is checked, the first time Claude Code runs with the plugin on.",
+		"[ ] Can't tell which recorder SigDek's plugin runs: Claude Code's list of installed plugins doesn't say",
+		"Downloaded for the plugin: SigDek 6.0.0.",
 	)
-	if strings.Contains(out, "Nothing records") {
-		t.Errorf("the plugin records here:\n%s", out)
+	if strings.Contains(out, "Nothing records") || strings.Contains(out, "6.0.0, the recorder") {
+		t.Errorf("plugin status:\n%s", out)
 	}
 
-	// With Claude Code's list of installed plugins, status checks the plugin's own pin.
-	install := filepath.Join(c.env.claudeDir, "plugins", "cache", "sigdek", "sigdek", "7.0.0")
-	os.MkdirAll(filepath.Join(install, "scripts"), 0o755)
-	os.WriteFile(filepath.Join(install, "scripts", "recorder.lock"), []byte("version=7.0.0\n"+runtime.GOOS+"_"+runtime.GOARCH+"="+recorderSum()+"\n"), 0o644)
-	os.WriteFile(filepath.Join(c.env.claudeDir, "plugins", "installed_plugins.json"),
-		[]byte(`{"version":2,"plugins":{"sigdek@sigdek":[{"scope":"user","installPath":`+jsonString(install)+`,"version":"7.0.0"}]}}`), 0o644)
-	c.has("[ ] SigDek 7.0.0, the recorder SigDek's plugin pins, isn't downloaded yet")
+	// With the list, status checks the install whose scope the setting stands for.
+	install := func(version string) string {
+		dir := filepath.Join(c.env.claudeDir, "plugins", "cache", "sigdek", "sigdek", version)
+		os.MkdirAll(filepath.Join(dir, "scripts"), 0o755)
+		os.WriteFile(filepath.Join(dir, "scripts", "recorder.lock"), []byte("version="+version+"\n"+runtime.GOOS+"_"+runtime.GOARCH+"="+recorderSum()+"\n"), 0o644)
+		return jsonString(dir)
+	}
+	os.WriteFile(filepath.Join(c.env.claudeDir, "plugins", "installed_plugins.json"), []byte(`{"version":2,"plugins":{"sigdek@sigdek":[`+
+		`{"scope":"project","projectPath":`+jsonString(t.TempDir())+`,"installPath":`+install("5.0.0")+`},`+
+		`{"scope":"local","projectPath":`+jsonString(c.root)+`,"installPath":`+install("8.0.0")+`},`+
+		`{"scope":"user","installPath":`+install("7.0.0")+`,"version":"7.0.0"}]}}`), 0o644)
+	c.has("[ ] SigDek 7.0.0, the recorder SigDek's plugin pins, isn't downloaded yet",
+		"It downloads, and is checked, the first time Claude Code runs with the plugin on.")
 	c.cached(filepath.Join(c.env.claudeDir, "plugins", "data", "sigdek-sigdek", "7.0.0"), recorderBytes)
 	c.has("[x] SigDek 7.0.0, the recorder SigDek's plugin pins, is downloaded and matches its checksum")
+	// Turned on for this project only: its local install.
+	os.MkdirAll(filepath.Join(c.root, ".claude"), 0o755)
+	os.WriteFile(filepath.Join(c.root, ".claude", "settings.local.json"), []byte(`{"enabledPlugins":{"sigdek@sigdek":true}}`), 0o644)
+	c.has("[ ] SigDek 8.0.0, the recorder SigDek's plugin pins, isn't downloaded yet")
+	os.Remove(filepath.Join(c.root, ".claude", "settings.local.json"))
 
 	// In a project with its own hooks, at its top folder, the project's hooks record.
-	c.project(false)
-	c.has("[x] Claude Code records in this project", "[ ] SigDek 7.0.0, the recorder this project pins, isn't downloaded yet")
+	c.project("claude-code,cursor", initcmd.CursorBoth)
+	c.has(ccRecords, "[ ] SigDek 7.0.0, the recorder this project pins, isn't downloaded yet")
 	// In a subfolder, the plugin does.
 	sub := filepath.Join(c.root, "app")
 	os.MkdirAll(sub, 0o755)
 	c.env.cwd = sub
 	c.has("[x] Claude Code records here, through SigDek's plugin", "Started in ", "[x] SigDek 7.0.0, the recorder SigDek's plugin pins, is downloaded")
+	// A plugin whose recorder can't download records nothing.
+	os.RemoveAll(filepath.Join(c.env.claudeDir, "plugins", "data", "sigdek-sigdek", "7.0.0"))
+	failed := filepath.Join(c.env.claudeDir, "plugins", "data", "sigdek-sigdek", "7.0.0")
+	os.MkdirAll(failed, 0o755)
+	os.WriteFile(filepath.Join(failed, ".download-failed"), []byte("2 x\n"), 0o644)
+	c.has("[ ] SigDek's Claude Code plugin is on here (turned on in ", "but it records nothing", "2 downloads failed")
 }
 
 func TestStatusOutsideAnyProject(t *testing.T) {
 	c := newStatusCase(t)
 	c.env.cwd = t.TempDir()
 	c.has("[ ] Nothing records Claude Code or Cursor in this folder yet", "https://sigdek.com/start/")
-	c.env.bin = os.Args[0]
-	c.has("SIGDEK_BIN is set, so hooks started from here run ")
 	// Status only reads.
 	if entries, _ := os.ReadDir(c.env.home); len(entries) != 0 {
 		t.Errorf("status wrote %v", entries)

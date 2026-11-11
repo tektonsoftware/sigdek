@@ -89,7 +89,7 @@ func TestInitMergesAndRemovesCleanly(t *testing.T) {
 		Hooks   map[string][]struct{ Command string } `json:"hooks"`
 	}
 	json.Unmarshal(cur, &cc)
-	if cc.Version != 1 || cc.Hooks["preToolUse"][0].Command != `set \'sigdek' ; $a = ${\sigdek} | powershell -NoProfile -ExecutionPolicy Bypass -File .sigdek/launch.ps1 hook cursor preToolUse | Where-Object { $_ -like "{*" } ; if ($a) { $a } else { "{""permission"":""allow""}" } ; exit 0 ; $null = ' ; sh .sigdek/launch.sh hook cursor preToolUse | grep "^{" || echo "{\"permission\":\"allow\"}" #'` {
+	if cc.Version != 1 || cc.Hooks["preToolUse"][0].Command != cursorCommand("preToolUse", ChooseCursorForm(t.TempDir(), runtime.GOOS, "")) {
 		t.Fatalf("cursor hooks: %s", cur)
 	}
 
@@ -886,13 +886,12 @@ func TestCursorCommandPassesOnTheAnswer(t *testing.T) {
 	}
 }
 
-// D10: on Windows, Cursor runs each hook command inside its own PowerShell wrapper, which pipes
-// the input in: `Get-Content payload.json -Raw | & { $input | <command> }`. The default command
-// then runs launch.ps1 with that input and passes on its answer, under Windows PowerShell 5.1
-// and PowerShell 7, and answers for itself when launch.ps1 is missing or broken. Elsewhere,
-// PowerShell 7 (where installed) reads the same command the same way; with no `powershell` to
-// run launch.ps1, it still answers.
-func TestCursorCommandsUnderCursorsPowerShellWrapper(t *testing.T) {
+// psShells are the PowerShells to run hook commands with, and the environment to give them: on
+// Windows, Windows PowerShell 5.1 and PowerShell 7 if installed; elsewhere PowerShell 7, with a
+// `powershell` command that runs pwsh when there is none (GitHub's macOS runners have one), so
+// launch.ps1 runs as it would on Windows.
+func psShells(t *testing.T) ([]string, []string) {
+	t.Helper()
 	var shells []string
 	for _, ps := range []string{"powershell", "pwsh"} {
 		if _, err := exec.LookPath(ps); err == nil && (ps == "pwsh" || runtime.GOOS == "windows") {
@@ -905,53 +904,89 @@ func TestCursorCommandsUnderCursorsPowerShellWrapper(t *testing.T) {
 	if len(shells) == 0 {
 		t.Skip("no PowerShell installed")
 	}
-	exe, _ := os.Executable()
-	wrap := func(ps, root, command, stdin string, extra ...string) (string, int) {
-		t.Helper()
-		payload := filepath.Join(t.TempDir(), "payload.json")
-		os.WriteFile(payload, []byte(stdin), 0o644)
-		script := "$OutputEncoding = [System.Text.Encoding]::UTF8; Get-Content -LiteralPath '" + payload + "' -Raw | & { $input | " + command + " }"
-		u := utf16.Encode([]rune(script))
-		b := make([]byte, 2*len(u))
-		for i, c := range u {
-			b[2*i], b[2*i+1] = byte(c), byte(c>>8)
-		}
-		cmd := exec.Command(ps, "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(b))
-		cmd.Dir = root
-		cmd.Env = cleanEnv(extra...)
-		out, err := cmd.Output()
-		code := 0
-		if ee, ok := err.(*exec.ExitError); ok {
-			code = ee.ExitCode()
-		} else if err != nil {
-			t.Fatal(err)
-		}
-		return strings.ReplaceAll(string(out), "\r\n", "\n"), code
+	var env []string
+	if _, err := exec.LookPath("powershell"); err != nil {
+		shim := t.TempDir()
+		os.WriteFile(filepath.Join(shim, "powershell"), []byte("#!/bin/sh\nexec pwsh \"$@\"\n"), 0o755)
+		env = append(env, "PATH="+shim+string(os.PathListSeparator)+os.Getenv("PATH"))
 	}
+	return shells, env
+}
+
+// encoded runs a PowerShell script given as -EncodedCommand, which needs no quoting.
+func encoded(t *testing.T, ps, dir, script, stdin string, env []string) (string, int) {
+	t.Helper()
+	u := utf16.Encode([]rune(script))
+	b := make([]byte, 2*len(u))
+	for i, c := range u {
+		b[2*i], b[2*i+1] = byte(c), byte(c>>8)
+	}
+	cmd := exec.Command(ps, "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(b))
+	cmd.Dir = dir
+	cmd.Env = env
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.Output()
+	code := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	return strings.ReplaceAll(string(out), "\r\n", "\n"), code
+}
+
+// cursorWrapped runs a hook command the way Cursor reportedly does on Windows: inside its own
+// PowerShell wrapper, which pipes the input in, `Get-Content payload.json -Raw | & { $input |
+// <command> }`.
+func cursorWrapped(t *testing.T, ps, root, command, stdin string, env []string) (string, int) {
+	t.Helper()
+	payload := filepath.Join(t.TempDir(), "payload.json")
+	os.WriteFile(payload, []byte(stdin), 0o644)
+	script := "$OutputEncoding = [System.Text.Encoding]::UTF8; Get-Content -LiteralPath '" + payload + "' -Raw | & { $input | " + command + " }"
+	return encoded(t, ps, root, script, "", env)
+}
+
+// D10: the sh-and-PowerShell form under PowerShell runs launch.ps1 with Cursor's input and passes
+// on its answer, under Windows PowerShell 5.1 and PowerShell 7, whether the input is piped in by
+// Cursor's wrapper or arrives on stdin (QA1-SETUP-2), and answers for itself when launch.ps1 is
+// missing or broken. The --powershell form passes on the answer too. Both run launch.ps1 under
+// -ExecutionPolicy RemoteSigned.
+func TestCursorCommandsUnderPowerShell(t *testing.T) {
+	shells, shim := psShells(t)
+	exe, _ := os.Executable()
 	for _, ps := range shells {
-		root := t.TempDir()
-		if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}}); err != nil {
-			t.Fatal(err)
-		}
-		_, cursor := hookCommands(t, root)
-		home := t.TempDir()
-		for _, ev := range []string{"preToolUse", "beforeSubmitPrompt", "stop"} {
-			in := `{"hook_event_name":"` + ev + `","prompt":"caf\u00e9"}`
-			got := filepath.Join(t.TempDir(), "stdin")
-			out, code := wrap(ps, root, cursor[ev], in, "SIGDEK_HOME="+home, "SIGDEK_BIN="+exe, "SIGDEK_TEST_RECORDER=answer", "SIGDEK_TEST_STDIN="+got)
-			// The PowerShell part runs launch.ps1 with Windows PowerShell; GitHub's macOS runners
-			// also have a `powershell` (PowerShell 7), elsewhere there is none and it answers itself.
-			want := cursorSafe(ev) + "\n"
-			if _, err := exec.LookPath("powershell"); err == nil {
-				want = `{"permission":"deny","user_message":"recorder ran: hook cursor ` + ev + `"}` + "\n"
-				if b, _ := os.ReadFile(got); !strings.Contains(string(b), `"hook_event_name":"`+ev+`"`) {
-					t.Errorf("%s %s: the recorder got %q", ps, ev, b)
+		for _, form := range []string{CursorBoth, CursorPowerShell} {
+			root := t.TempDir()
+			if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}, CursorForm: form}); err != nil {
+				t.Fatal(err)
+			}
+			_, cursor := hookCommands(t, root)
+			home := t.TempDir()
+			for _, ev := range []string{"preToolUse", "beforeSubmitPrompt", "stop"} {
+				in := `{"hook_event_name":"` + ev + `","prompt":"caf\u00e9"}`
+				want := `{"permission":"deny","user_message":"recorder ran: hook cursor ` + ev + `"}` + "\n"
+				ways := map[string]func(env []string) (string, int){
+					"piped in by Cursor's wrapper": func(env []string) (string, int) { return cursorWrapped(t, ps, root, cursor[ev], in, env) },
+				}
+				if form == CursorBoth {
+					// No wrapper: the input is the process's stdin, which launch.ps1 inherits.
+					ways["on stdin"] = func(env []string) (string, int) { return encoded(t, ps, root, cursor[ev], in, env) }
+				}
+				for way, run := range ways {
+					got := filepath.Join(t.TempDir(), "stdin")
+					env := cleanEnv(append(shim, "SIGDEK_HOME="+home, "SIGDEK_BIN="+exe, "SIGDEK_TEST_RECORDER=answer", "SIGDEK_TEST_STDIN="+got)...)
+					out, code := run(env)
+					if code != 0 || out != want {
+						t.Errorf("%s, %s form, %s, input %s: exit %d, stdout %q, want %q", ps, form, ev, way, code, out, want)
+					}
+					if b, _ := os.ReadFile(got); !strings.Contains(string(b), `"hook_event_name":"`+ev+`"`) {
+						t.Errorf("%s, %s form, %s, input %s: the recorder got %q", ps, form, ev, way, b)
+					}
 				}
 			}
-			if code != 0 || out != want {
-				t.Errorf("%s %s: exit %d, stdout %q, want %q", ps, ev, code, out, want)
-			}
 		}
+
+		// The sh-and-PowerShell form always answers, whatever happened to launch.ps1.
 		damage := map[string]func(dir string){
 			"no .sigdek folder": func(dir string) { os.RemoveAll(dir) },
 			"no launch.ps1":     func(dir string) { os.Remove(filepath.Join(dir, "launch.ps1")) },
@@ -967,19 +1002,60 @@ func TestCursorCommandsUnderCursorsPowerShellWrapper(t *testing.T) {
 				os.WriteFile(filepath.Join(dir, "launch.ps1"), []byte("Write-Output 'version https://git-lfs.github.com/spec/v1'\nexit 2\n"), 0o644)
 			},
 		}
+		home := t.TempDir()
 		for name, broke := range damage {
 			root := t.TempDir()
-			if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}}); err != nil {
+			if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}, CursorForm: CursorBoth}); err != nil {
 				t.Fatal(err)
 			}
 			broke(filepath.Join(root, ".sigdek"))
 			_, cursor := hookCommands(t, root)
 			for _, ev := range []string{"preToolUse", "beforeSubmitPrompt"} {
-				if out, code := wrap(ps, root, cursor[ev], `{"hook_event_name":"`+ev+`"}`, "SIGDEK_HOME="+home); code != 0 || out != cursorSafe(ev)+"\n" {
+				out, code := cursorWrapped(t, ps, root, cursor[ev], `{"hook_event_name":"`+ev+`"}`, cleanEnv(append(shim, "SIGDEK_HOME="+home)...))
+				if code != 0 || out != cursorSafe(ev)+"\n" {
 					t.Errorf("%s, %s, %s: exit %d, stdout %q", ps, name, ev, code, out)
 				}
 			}
 		}
+	}
+}
+
+// D10: on Windows, the execution policy the Cursor commands set, RemoteSigned, is the one in
+// force for launch.ps1: a launch.ps1 marked as downloaded from the internet is refused (and
+// Cursor still gets its answer), and an unmarked one, as a clone gives, runs.
+func TestCursorCommandsExecutionPolicyOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("execution policies are Windows PowerShell's")
+	}
+	if _, err := exec.LookPath("powershell"); err != nil {
+		t.Fatal("Windows PowerShell isn't installed")
+	}
+	exe, _ := os.Executable()
+	root := t.TempDir()
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}, CursorForm: CursorBoth}); err != nil {
+		t.Fatal(err)
+	}
+	_, cursor := hookCommands(t, root)
+	run := func() (string, string, int) {
+		got := filepath.Join(t.TempDir(), "stdin")
+		out, code := cursorWrapped(t, "powershell", root, cursor["preToolUse"], `{"hook_event_name":"preToolUse"}`,
+			cleanEnv("SIGDEK_HOME="+t.TempDir(), "SIGDEK_BIN="+exe, "SIGDEK_TEST_RECORDER=answer", "SIGDEK_TEST_STDIN="+got))
+		b, _ := os.ReadFile(got)
+		return out, string(b), code
+	}
+	if out, in, code := run(); code != 0 || !strings.Contains(out, `"permission":"deny"`) || in == "" {
+		t.Fatalf("unmarked launch.ps1 under RemoteSigned: exit %d, stdout %q, recorder input %q", code, out, in)
+	}
+	policy, _ := encoded(t, "powershell", root, "powershell -NoProfile -ExecutionPolicy RemoteSigned -Command Get-ExecutionPolicy", "", cleanEnv())
+	if strings.TrimSpace(policy) != "RemoteSigned" {
+		t.Errorf("the effective policy is %q, not RemoteSigned", policy)
+	}
+	// Mark of the Web: downloaded from the internet (zone 3).
+	if err := os.WriteFile(filepath.Join(root, ".sigdek", "launch.ps1")+":Zone.Identifier", []byte("[ZoneTransfer]\r\nZoneId=3\r\n"), 0o644); err != nil {
+		t.Skipf("can't mark the file (%v)", err)
+	}
+	if out, in, code := run(); code != 0 || out != cursorSafe("preToolUse")+"\n" || in != "" {
+		t.Errorf("marked launch.ps1 under RemoteSigned: exit %d, stdout %q, recorder input %q; want it refused, with the safe answer", code, out, in)
 	}
 }
 
@@ -990,12 +1066,12 @@ func TestOutdatedHookCommands(t *testing.T) {
 	if got := Outdated(root); len(got) != 0 {
 		t.Fatalf("no hook files: %v", got)
 	}
-	for _, ps := range []bool{false, true} {
-		if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}, PowerShell: ps}); err != nil {
+	for _, form := range []string{"", CursorSh, CursorBoth, CursorPowerShell} {
+		if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}, CursorForm: form}); err != nil {
 			t.Fatal(err)
 		}
 		if got := Outdated(root); len(got) != 0 {
-			t.Fatalf("current commands (powershell %v) called outdated: %v", ps, got)
+			t.Fatalf("current commands (form %q) called outdated: %v", form, got)
 		}
 	}
 	write := func(path, body string) {
@@ -1010,22 +1086,19 @@ func TestOutdatedHookCommands(t *testing.T) {
 		if got := Outdated(root); len(got) != 1 || got[0] != "cursor" {
 			t.Errorf("%s: %v", old, got)
 		}
+		if got := CursorForm(root); got != CursorOlder {
+			t.Errorf("CursorForm with an older form: %q", got)
+		}
 	}
-	// D10: the sh-only form of 0.1.0 doesn't block, so it isn't outdated; it records nothing for
-	// Cursor on Windows, which CursorForm says.
-	if got := CursorForm(root); got != CursorOlder {
-		t.Errorf("CursorForm with an older form: %q", got)
-	}
-	v010 := `sh .sigdek/launch.sh hook cursor preToolUse | grep '^{' || echo '{\"permission\":\"allow\"}'`
-	write(".cursor/hooks.json", `{"version":1,"hooks":{"stop":[{"command":"./my-own-hook.sh"}],"preToolUse":[{"command":"`+v010+`"}]}}`)
-	if got := Outdated(root); len(got) != 0 || CursorForm(root) != CursorSh {
-		t.Errorf("0.1.0 form: outdated %v, form %q", got, CursorForm(root))
-	}
-	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}}); err != nil || CursorForm(root) != CursorBoth {
-		t.Errorf("init again: %v, form %q", err, CursorForm(root))
-	}
-	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}, PowerShell: true}); err != nil || CursorForm(root) != CursorPowerShell {
-		t.Errorf("init --powershell: %v, form %q", err, CursorForm(root))
+	// What 0.1.0 wrote, by default and with --powershell (with Bypass), is current.
+	for v010, form := range map[string]string{
+		`sh .sigdek/launch.sh hook cursor preToolUse | grep '^{' || echo '{\"permission\":\"allow\"}'`:  CursorSh,
+		`powershell -NoProfile -ExecutionPolicy Bypass -File .sigdek/launch.ps1 hook cursor preToolUse`: CursorPowerShell,
+	} {
+		write(".cursor/hooks.json", `{"version":1,"hooks":{"stop":[{"command":"./my-own-hook.sh"}],"preToolUse":[{"command":"`+v010+`"}]}}`)
+		if got := Outdated(root); len(got) != 0 || CursorForm(root) != form {
+			t.Errorf("0.1.0 form %q: outdated %v, form %q", form, got, CursorForm(root))
+		}
 	}
 	write(".cursor/hooks.json", `{"version":1,"hooks":{"stop":[{"command":"./my-own-hook.sh"}]}}`)
 	write(".claude/settings.json", `{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"sh \"$CLAUDE_PROJECT_DIR/.sigdek/launch.sh\" hook claude-code"}]}]}}`)
@@ -1034,12 +1107,113 @@ func TestOutdatedHookCommands(t *testing.T) {
 	}
 }
 
-func TestPowerShellNote(t *testing.T) {
-	// D10: the default Cursor hooks work on Windows too; only --powershell gets a note.
-	if PowerShellNote([]string{"claude-code", "cursor"}, true) == "" {
-		t.Error("no note for --powershell Cursor hooks")
+// Lead's decision 1: init writes the form a flag names; without one, CursorBoth where the
+// project's Cursor hooks already run under PowerShell, CursorBoth on Windows, and
+// DefaultCursorForm elsewhere. Whichever DefaultCursorForm is, these hold.
+func TestChooseCursorForm(t *testing.T) {
+	root := t.TempDir()
+	for _, c := range []struct{ goos, flag, want string }{
+		{"darwin", "", DefaultCursorForm},
+		{"linux", "", DefaultCursorForm},
+		{"windows", "", CursorBoth},
+		{"darwin", CursorBoth, CursorBoth},
+		{"windows", CursorPowerShell, CursorPowerShell},
+		{"windows", CursorSh, CursorSh},
+	} {
+		if got := ChooseCursorForm(root, c.goos, c.flag); got != c.want {
+			t.Errorf("%s, flag %q: %q, want %q", c.goos, c.flag, got, c.want)
+		}
 	}
-	if PowerShellNote([]string{"claude-code", "cursor"}, false) != "" || PowerShellNote([]string{"claude-code"}, true) != "" {
-		t.Error("a note without --powershell Cursor hooks")
+	// Running init again on a Mac keeps Cursor recording on Windows.
+	for _, existing := range []string{CursorBoth, CursorPowerShell} {
+		if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}, CursorForm: existing}); err != nil {
+			t.Fatal(err)
+		}
+		if got := ChooseCursorForm(root, "darwin", ""); got != CursorBoth {
+			t.Errorf("project with %s hooks, init again on macOS: %q", existing, got)
+		}
+		if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}, GOOS: "darwin"}); err != nil || CursorForm(root) != CursorBoth {
+			t.Errorf("project with %s hooks, Run on macOS: %v, form %q", existing, err, CursorForm(root))
+		}
+	}
+	// A project with the sh form gets the system's default.
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}, CursorForm: CursorSh}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ChooseCursorForm(root, "darwin", ""); got != DefaultCursorForm {
+		t.Errorf("project with sh hooks on macOS: %q", got)
+	}
+	if got := ChooseCursorForm(root, "windows", ""); got != CursorBoth {
+		t.Errorf("project with sh hooks on Windows: %q", got)
+	}
+}
+
+// The commands each form writes, exactly: a change to them is deliberate, and 0.1.0's are still
+// recognised (TestOutdatedHookCommands).
+func TestCursorCommandForms(t *testing.T) {
+	for form, want := range map[string]string{
+		CursorSh:         `sh .sigdek/launch.sh hook cursor preToolUse | grep '^{' || echo '{"permission":"allow"}'`,
+		CursorPowerShell: `powershell -NoProfile -ExecutionPolicy RemoteSigned -File .sigdek/launch.ps1 hook cursor preToolUse`,
+		CursorBoth:       `set \'sigdek' ; $i = ${\sigdek} ; $a = if ($null -ne $i) { $i | powershell -NoProfile -ExecutionPolicy RemoteSigned -File .sigdek/launch.ps1 hook cursor preToolUse } else { powershell -NoProfile -ExecutionPolicy RemoteSigned -File .sigdek/launch.ps1 hook cursor preToolUse } ; $a = $a | Where-Object { $_ -like "{*" } ; if ($a) { $a } else { "{""permission"":""allow""}" } ; exit 0 ; $null = ' ; sh .sigdek/launch.sh hook cursor preToolUse | grep "^{" || echo "{\"permission\":\"allow\"}" #'`,
+	} {
+		if got := cursorCommand("preToolUse", form); got != want {
+			t.Errorf("%s form:\n got %s\nwant %s", form, got, want)
+		}
+	}
+	// Neither half of the sh-and-PowerShell form may hold a single quote.
+	for _, ev := range adapter.CursorEvents {
+		if strings.Contains(dualPS(ev), "'") || strings.Contains(dualSh(ev), "'") {
+			t.Errorf("%s: a single quote in a half of the command", ev)
+		}
+	}
+}
+
+// QA1-SETUP-4, -5: .sigdek/README.md says only what's true of the hooks the project has.
+func TestReadmeDescribesTheHooksWritten(t *testing.T) {
+	for _, c := range []struct {
+		tools, form string
+		has, not    []string
+	}{
+		{"claude-code,cursor", CursorSh, []string{"Claude Code and Cursor record", shCommand("preToolUse"), "`sigdek init --windows`", claudeCommand}, []string{"ExecutionPolicy", "PowerShell reads"}},
+		{"claude-code,cursor", CursorBoth, append([]string{dualCommand("preToolUse"), dualSh("preToolUse"), "    set \\'sigdek'\n", "RemoteSigned` is there because", "one powershell process only"},
+			strings.Split(dualPS("preToolUse"), " ; ")...), []string{"grep '^{'"}},
+		{"claude-code,cursor", CursorPowerShell, []string{psCommand("preToolUse"), "named `powershell`", "gives Cursor no", "RemoteSigned` is there because"}, []string{"sh reads", "always answer.\n\n## "}},
+		{"claude-code", "", []string{"makes Claude Code record", claudeCommand}, []string{"## Cursor", "PowerShell"}},
+		{"cursor", CursorSh, []string{"makes Cursor record", shCommand("stop")[:20]}, []string{"## Claude Code"}},
+	} {
+		root := t.TempDir()
+		if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{c.tools}, CursorForm: c.form}); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(filepath.Join(root, ".sigdek", "README.md"))
+		for _, h := range c.has {
+			if !strings.Contains(string(b), h) {
+				t.Errorf("%s, %s: README lacks %q:\n%s", c.tools, c.form, h, b)
+			}
+		}
+		for _, n := range c.not {
+			if strings.Contains(string(b), n) {
+				t.Errorf("%s, %s: README has %q:\n%s", c.tools, c.form, n, b)
+			}
+		}
+	}
+	// Adding Claude Code later keeps the Cursor part, which init didn't touch this time.
+	root := t.TempDir()
+	Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}, CursorForm: CursorBoth})
+	Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code"}})
+	if b, _ := os.ReadFile(filepath.Join(root, ".sigdek", "README.md")); !strings.Contains(string(b), "## Claude Code") || !strings.Contains(string(b), dualSh("preToolUse")) {
+		t.Errorf("README after adding Claude Code:\n%s", b)
+	}
+}
+
+func TestFormNote(t *testing.T) {
+	if n := FormNote(CursorSh, "npx sigdek"); !strings.Contains(n, "`npx sigdek init --windows`") {
+		t.Errorf("sh: %q", n)
+	}
+	if n := FormNote(CursorPowerShell, "sigdek"); !strings.Contains(n, "named `powershell`") || !strings.Contains(n, "`sigdek init --windows`") {
+		t.Errorf("powershell: %q", n)
+	}
+	if n := FormNote(CursorBoth, "sigdek"); !strings.Contains(n, "on all three") {
+		t.Errorf("both: %q", n)
 	}
 }

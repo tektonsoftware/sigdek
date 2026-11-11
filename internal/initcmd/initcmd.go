@@ -40,7 +40,8 @@ type Options struct {
 	Root       string   // repository root
 	Version    string   // this binary's version; "dev" for local builds
 	Tools      []string // "claude-code", "cursor"
-	PowerShell bool     // write Cursor hooks for PowerShell (Windows teams)
+	CursorForm string   // CursorSh, CursorBoth or CursorPowerShell; "" lets ChooseCursorForm decide
+	GOOS       string   // the system init runs on, for ChooseCursorForm; runtime.GOOS when ""
 	Offline    bool     // don't fetch release checksums; pin only this machine's platform
 	Remove     bool     // take SigDek out of the repository's hook files
 	Client     *http.Client
@@ -62,31 +63,68 @@ const (
 	hookTimeout   = 10
 )
 
-// cursorCommand gives Cursor the launcher's own safe answer whenever the launcher gives none:
-// Cursor blocks on exit 2 and on invalid output from permission hooks, and on no output at all
-// under failClosed. `grep '^{'` passes on the launcher's answer (one JSON object) and fails
-// when there is none, so `|| echo` answers for a launcher that failed, for one that printed
-// nothing and exited 0 (an empty launch.sh, or a folder in its place), and for one replaced by
-// something that prints other text (a Git LFS pointer runs `size`, which macOS has).
-//
-// .cursor/hooks.json is committed and shared, and Cursor runs the same command through sh on
-// macOS and Linux and through PowerShell on Windows, so the default command reads as a
-// different program to each (see dualCommand). The --powershell form is PowerShell only.
-func cursorCommand(event string, ps bool) string {
-	if ps {
-		return psCommand(event)
+// The forms of SigDek's Cursor hook commands. Cursor runs a hook command through sh on macOS and
+// Linux and through PowerShell on Windows, and .cursor/hooks.json is committed and shared, so
+// the form decides where Cursor records.
+const (
+	CursorSh         = "sh"         // sh only: macOS and Linux. Windows PowerShell 5.1 can't parse its `||`
+	CursorBoth       = "both"       // sh and PowerShell in one command (`sigdek init --windows`)
+	CursorPowerShell = "powershell" // PowerShell only (`sigdek init --powershell`): needs a `powershell` command
+	CursorMixed      = "mixed"      // current forms, but not all the same one
+	CursorOlder      = "older"      // a form an older sigdek init wrote, which can block
+)
+
+// DefaultCursorForm is the Cursor form `sigdek init` writes on macOS and Linux when no flag names
+// one and the project's Cursor hooks don't already use CursorBoth or CursorPowerShell. On Windows
+// it writes CursorBoth. To make CursorBoth the default on every system, set this to CursorBoth.
+const DefaultCursorForm = CursorSh
+
+// ChooseCursorForm is the Cursor form init writes in the repository at root: the one a flag names,
+// else CursorBoth where the project's Cursor hooks already run under PowerShell (so that someone
+// running init again on a Mac doesn't stop Cursor recording on Windows), else CursorBoth on
+// Windows, else DefaultCursorForm.
+func ChooseCursorForm(root, goos, flag string) string {
+	if flag != "" {
+		return flag
 	}
-	return dualCommand(event)
+	if forms := CursorForms(root); forms[CursorBoth] || forms[CursorPowerShell] {
+		return CursorBoth
+	}
+	if goos == "windows" {
+		return CursorBoth
+	}
+	return DefaultCursorForm
+}
+
+// cursorCommand is the Cursor hook command for an event, in a form. Each form gives Cursor the
+// launcher's own safe answer whenever the launcher gives none, apart from the PowerShell-only
+// form when launch.ps1 itself is missing, empty or can't be parsed: Cursor blocks on exit 2 and
+// on invalid output from permission hooks, and on no output at all under failClosed.
+func cursorCommand(event, form string) string {
+	switch form {
+	case CursorPowerShell:
+		return psCommand(event)
+	case CursorBoth:
+		return dualCommand(event)
+	}
+	return shCommand(event)
+}
+
+// psLaunch runs launch.ps1 in Windows PowerShell. launch.ps1 isn't signed, and Windows' default
+// execution policy refuses every script; RemoteSigned, for this one process only, lets a local
+// unsigned script run but still refuses one marked as downloaded from the internet. (0.1.0 wrote
+// Bypass, which status and init still accept.)
+func psLaunch(event, policy string) string {
+	return "powershell -NoProfile -ExecutionPolicy " + policy + " -File .sigdek/launch.ps1 hook cursor " + event
 }
 
 // psCommand is the --powershell form: launch.ps1 catches its own errors and exits 0.
-func psCommand(event string) string {
-	return "powershell -NoProfile -ExecutionPolicy Bypass -File .sigdek/launch.ps1 hook cursor " + event
-}
+func psCommand(event string) string { return psLaunch(event, "RemoteSigned") }
 
-// shCommand is the sh form that `sigdek init` wrote by default up to 0.1.0. It works on macOS
-// and Linux; Windows PowerShell 5.1 can't parse its `||`, so Cursor on Windows records nothing
-// with it (without blocking).
+// shCommand is the sh form. `grep '^{'` passes on the launcher's answer (one JSON object) and
+// fails when there is none, so `|| echo` answers for a launcher that failed, for one that printed
+// nothing and exited 0 (an empty launch.sh, or a folder in its place), and for one replaced by
+// something that prints other text (a Git LFS pointer runs `size`, which macOS has).
 func shCommand(event string) string {
 	return "sh .sigdek/launch.sh hook cursor " + event + " | grep '^{' || echo '" + safeAnswer(event) + "'"
 }
@@ -96,7 +134,7 @@ func safeAnswer(event string) string {
 }
 
 // dualCommand is one command that sh and PowerShell (Windows PowerShell 5.1 and PowerShell 7)
-// each read as their own program, so the committed hooks work for Cursor on every platform:
+// each read as their own program:
 //
 //	set \'sigdek' ; <PowerShell part> ; $null = ' ; <sh part> #'
 //
@@ -104,24 +142,44 @@ func safeAnswer(event string) string {
 // character and ' as the start of a string. So sh runs `set` with one argument that holds the
 // PowerShell part, then runs the sh part and ignores the `#'` comment. PowerShell runs `set`
 // (Set-Variable) on a variable named \sigdek, runs the PowerShell part, and assigns the string
-// holding the sh part to $null. Neither part may contain a single quote.
+// holding the sh part to $null. Neither part may contain a single quote. dualPrograms shows the
+// two as each shell reads them.
 //
-// On Windows, Cursor runs `$OutputEncoding = [Text.Encoding]::UTF8; Get-Content payload.json
-// -Raw | & { $input | <command> }`, so the hook's input is piped into the first command: `set`
-// keeps it in ${\sigdek}, and the PowerShell part pipes it into launch.ps1, keeps the line that
-// starts with "{", and answers for itself when there is none.
+// On Windows, Cursor pipes the hook's input into the command (its docs), reportedly as
+// `Get-Content payload.json -Raw | & { $input | <command> }`. Then `set` keeps the input in
+// ${\sigdek}, and the PowerShell part pipes it into launch.ps1. When nothing was piped in, it runs
+// launch.ps1 without a pipe, so launch.ps1 reads the hook's own stdin. Either way it keeps the
+// line that starts with "{", and answers for itself when there is none.
 func dualCommand(event string) string {
-	safe := safeAnswer(event)
-	ps := "$a = ${\\sigdek} | " + psCommand(event) + ` | Where-Object { $_ -like "{*" } ; if ($a) { $a } else { "` +
-		strings.ReplaceAll(safe, `"`, `""`) + `" } ; exit 0`
-	sh := "sh .sigdek/launch.sh hook cursor " + event + ` | grep "^{" || echo "` + strings.ReplaceAll(safe, `"`, `\"`) + `"`
-	return `set \'sigdek' ; ` + ps + " ; $null = ' ; " + sh + " #'"
+	return "set \\'sigdek' ; " + dualPS(event) + " ; $null = ' ; " + dualSh(event) + " #'"
+}
+
+func dualPS(event string) string {
+	launch := psLaunch(event, "RemoteSigned")
+	return "$i = ${\\sigdek} ; $a = if ($null -ne $i) { $i | " + launch + " } else { " + launch + " } ; " +
+		`$a = $a | Where-Object { $_ -like "{*" } ; if ($a) { $a } else { "` + strings.ReplaceAll(safeAnswer(event), `"`, `""`) + `" } ; exit 0`
+}
+
+func dualSh(event string) string {
+	return "sh .sigdek/launch.sh hook cursor " + event + ` | grep "^{" || echo "` + strings.ReplaceAll(safeAnswer(event), `"`, `\"`) + `"`
+}
+
+// eventForm names the form of one Cursor hook command, accepting what 0.1.0 wrote.
+func eventForm(event, command string) string {
+	switch command {
+	case shCommand(event):
+		return CursorSh
+	case dualCommand(event):
+		return CursorBoth
+	case psCommand(event), psLaunch(event, "Bypass"):
+		return CursorPowerShell
+	}
+	return CursorOlder
 }
 
 // Outdated names the agent tools whose SigDek hook commands in the repository at root are older
 // forms that can block or break the agent (an older sigdek init wrote them), so `sigdek init`
-// should run again. The --powershell form and the sh form of 0.1.0 are current enough; see
-// CursorForm.
+// should run again. Every current Cursor form, and those 0.1.0 wrote, are current enough.
 func Outdated(root string) []string {
 	var out []string
 	for _, c := range sigdekCommands(filepath.Join(root, ".claude", "settings.json"), true) {
@@ -130,48 +188,50 @@ func Outdated(root string) []string {
 			break
 		}
 	}
-	for _, c := range sigdekCommands(filepath.Join(root, ".cursor", "hooks.json"), false) {
-		if c.command != dualCommand(c.event) && c.command != psCommand(c.event) && c.command != shCommand(c.event) {
-			out = append(out, "cursor")
-			break
-		}
+	if CursorForms(root)[CursorOlder] {
+		out = append(out, "cursor")
 	}
 	return out
 }
 
-// The forms SigDek's Cursor hook commands take, as CursorForm names them.
-const (
-	CursorBoth       = "both"       // sh and PowerShell: the default since 0.1.1
-	CursorSh         = "sh"         // sh only: the default up to 0.1.0, which records nothing for Cursor on Windows
-	CursorPowerShell = "powershell" // PowerShell only: `sigdek init --powershell`
-	CursorMixed      = "mixed"      // current forms, but not all the same one
-	CursorOlder      = "older"      // a form an older sigdek init wrote, which can block
-)
-
-// CursorForm says which form the SigDek Cursor hook commands in the repository at root take,
-// or "" when it has none.
-func CursorForm(root string) string {
-	form := ""
+// CursorForms says which forms the SigDek Cursor hook commands in the repository at root take.
+func CursorForms(root string) map[string]bool {
+	forms := map[string]bool{}
 	for _, c := range sigdekCommands(filepath.Join(root, ".cursor", "hooks.json"), false) {
-		f := CursorOlder
-		switch c.command {
-		case dualCommand(c.event):
-			f = CursorBoth
-		case shCommand(c.event):
-			f = CursorSh
-		case psCommand(c.event):
-			f = CursorPowerShell
-		}
+		forms[eventForm(c.event, c.command)] = true
+	}
+	return forms
+}
+
+// CursorForm says which form the SigDek Cursor hook commands in the repository at root take:
+// CursorOlder if any is an older form, CursorMixed if they differ, or "" when there are none.
+func CursorForm(root string) string {
+	forms := CursorForms(root)
+	switch {
+	case forms[CursorOlder]:
+		return CursorOlder
+	case len(forms) > 1:
+		return CursorMixed
+	}
+	for f := range forms {
+		return f
+	}
+	return ""
+}
+
+// CursorRunsOn says whether every SigDek Cursor hook command in the repository at root can run
+// on goos: Windows needs PowerShell's forms, macOS and Linux sh's (a `powershell` command there
+// is PowerShell 7, which Cursor doesn't run hooks through).
+func CursorRunsOn(root, goos string) bool {
+	for f := range CursorForms(root) {
 		switch {
 		case f == CursorOlder:
-			return CursorOlder
-		case form == "":
-			form = f
-		case form != f:
-			form = CursorMixed
+		case f == CursorBoth:
+		case goos == "windows" && f == CursorSh, goos != "windows" && f == CursorPowerShell:
+			return false
 		}
 	}
-	return form
+	return true
 }
 
 type hookCommand struct{ event, command string }
@@ -183,6 +243,12 @@ func sigdekCommands(path string, grouped bool) []hookCommand {
 	if err != nil {
 		return nil
 	}
+	return parseCommands(b, grouped)
+}
+
+// parseCommands is sigdekCommands for a hook file's content.
+func parseCommands(b []byte, grouped bool) []hookCommand {
+	b = bytes.TrimPrefix(b, []byte("\xef\xbb\xbf"))
 	type hook struct {
 		Command string `json:"command"`
 	}
@@ -217,18 +283,33 @@ func sigdekCommands(path string, grouped bool) []hookCommand {
 	return out
 }
 
-// PowerShellNote is what init says after writing Cursor hooks with --powershell: they run only
-// where PowerShell is installed, which the default hooks don't need.
-func PowerShellNote(tools []string, ps bool) string {
-	if !ps {
-		return ""
+// sigdekCommandsIn is sigdekCommands for a hook file as it will be once the planned changes in
+// after are made.
+func sigdekCommandsIn(root string, after map[string][]byte, claude bool) []hookCommand {
+	path := filepath.Join(root, ".cursor", "hooks.json")
+	if claude {
+		path = filepath.Join(root, ".claude", "settings.json")
 	}
-	for _, t := range tools {
-		if t == "cursor" {
-			return "Note: these Cursor hooks run only where PowerShell is installed, so Cursor on macOS and Linux\n" +
-				"records nothing with them (it isn't blocked). The default `sigdek init` hooks work for Cursor on\n" +
-				"Windows, macOS and Linux."
-		}
+	if b, ok := after[path]; ok {
+		return parseCommands(b, claude)
+	}
+	return sigdekCommands(path, claude)
+}
+
+// FormNote is what init says about the Cursor hooks it wrote in a form; cmd is how the person
+// runs SigDek ("sigdek" or "npx sigdek").
+func FormNote(form, cmd string) string {
+	switch form {
+	case CursorSh:
+		return "Note: Cursor on Windows can't run these Cursor hooks. If anyone uses Cursor on Windows in this\n" +
+			"project, run `" + cmd + " init --windows` instead."
+	case CursorBoth:
+		return "These Cursor hooks run under sh on macOS and Linux and under PowerShell on Windows, so Cursor\n" +
+			"records on all three. .sigdek/README.md shows what each shell runs."
+	case CursorPowerShell:
+		return "Note: these Cursor hooks need a command named `powershell` (Windows PowerShell), so Cursor on\n" +
+			"macOS and Linux records nothing with them (it isn't blocked), even with PowerShell 7, which\n" +
+			"installs only `pwsh` there. `" + cmd + " init --windows` writes hooks that work on all three."
 	}
 	return ""
 }
@@ -252,6 +333,10 @@ func Run(o Options) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	if o.GOOS == "" {
+		o.GOOS = runtime.GOOS
+	}
+	form := ChooseCursorForm(o.Root, o.GOOS, o.CursorForm)
 	var plan []change
 	after := map[string][]byte{} // hook file -> its content once the plan is applied
 	for _, t := range tools {
@@ -260,7 +345,7 @@ func Run(o Options) ([]string, error) {
 		case "claude-code":
 			c, err = claudeSettings(o.Root, o.Remove)
 		case "cursor":
-			c, err = cursorHooks(o.Root, o.PowerShell, o.Remove)
+			c, err = cursorHooks(o.Root, form, o.Remove)
 		}
 		if err != nil {
 			return nil, err
@@ -294,7 +379,21 @@ func Run(o Options) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		data := map[string][]byte{"launch.sh": launchSh, "launch.ps1": launchPs1, "recorder.lock": lock, "README.md": []byte(readme), ".gitattributes": []byte(gitattributes)}
+		// The README describes the hooks the project has once this run is done.
+		claude, cursor := false, ""
+		for _, c := range sigdekCommandsIn(o.Root, after, true) {
+			claude = claude || c.command != ""
+		}
+		cursorForms := map[string]bool{}
+		for _, c := range sigdekCommandsIn(o.Root, after, false) {
+			cursorForms[eventForm(c.event, c.command)] = true
+		}
+		for f := range cursorForms {
+			if cursor = f; len(cursorForms) > 1 {
+				cursor = CursorMixed
+			}
+		}
+		data := map[string][]byte{"launch.sh": launchSh, "launch.ps1": launchPs1, "recorder.lock": lock, "README.md": []byte(Readme(claude, cursor)), ".gitattributes": []byte(gitattributes)}
 		for _, f := range ourFiles {
 			plan = append(plan, change{path: filepath.Join(dir, f.name), data: data[f.name], mode: f.mode, forceMode: true})
 		}
@@ -447,7 +546,7 @@ func claudeSettings(root string, remove bool) (*change, error) {
 }
 
 // cursorHooks merges one hook per event into .cursor/hooks.json, keeping everything else.
-func cursorHooks(root string, ps, remove bool) (*change, error) {
+func cursorHooks(root, form string, remove bool) (*change, error) {
 	path := filepath.Join(root, ".cursor", "hooks.json")
 	obj, existed, err := readObjectFile(path)
 	if err != nil {
@@ -471,7 +570,7 @@ func cursorHooks(root string, ps, remove bool) (*change, error) {
 	if !remove {
 		for _, ev := range adapter.CursorEvents {
 			hook := newObject()
-			hook.set("command", cursorCommand(ev, ps))
+			hook.set("command", cursorCommand(ev, form))
 			hook.set("timeout", hookTimeout)
 			hb, _ := hook.marshal()
 			appendList(ho, ev, hb)
@@ -775,23 +874,123 @@ const gitattributes = `# Written by sigdek init: keep the launchers' line ending
 recorder.lock text eol=lf
 `
 
-const readme = `# .sigdek
+// Readme is .sigdek/README.md for a project whose hooks are SigDek's for Claude Code (claude)
+// and for Cursor in a form ("" when it has none), so it says only what's true of those.
+func Readme(claude bool, cursor string) string {
+	tools := "Claude Code and Cursor"
+	switch {
+	case !claude && cursor != "":
+		tools = "Cursor"
+	case claude && cursor == "":
+		tools = "Claude Code"
+	}
+	var b strings.Builder
+	b.WriteString(`# .sigdek
 
-This folder makes Claude Code and Cursor record what their agents do in this repository,
+This folder makes ` + tools + ` record what their agents do in this repository,
 for your team's SigDek evidence log. It was added by ` + "`sigdek init`" + `.
 
 - **launch.sh / launch.ps1** run the recorder. On first use they download the version
   pinned in recorder.lock and refuse it unless its SHA-256 matches. If anything fails,
   they exit quietly and your agent carries on.
-- The Cursor hook commands in .cursor/hooks.json read as one program to sh, which runs
-  launch.sh (macOS and Linux), and as another to PowerShell, which runs launch.ps1 (Cursor
-  on Windows). Neither part blocks the agent if the launcher is missing or broken.
 - **recorder.lock** pins the version and checksums. Update it with ` + "`sigdek init`" + ` from a newer release.
 - **.gitattributes** keeps the launchers' line endings the same on every checkout.
+`)
+	if claude {
+		b.WriteString(`
+## Claude Code
 
+Claude Code's hooks, in .claude/settings.json, run the launcher for each event:
+
+    ` + claudeCommand + `
+
+` + "`; exit 0`" + ` means the command never stops the agent, even when the launcher is missing.
+On Windows, Claude Code runs it through Git Bash.
+`)
+	}
+	ev := "preToolUse"
+	policy := `
+` + "`-ExecutionPolicy RemoteSigned`" + ` is there because launch.ps1 isn't signed, and the policy Windows
+sets on a PC by default refuses every script. It applies to that one powershell process only and changes no
+setting on the machine. RemoteSigned still refuses a script marked as downloaded from the
+internet, such as one unpacked from a downloaded ZIP file; a git clone isn't marked.
+`
+	switch cursor {
+	case CursorSh:
+		b.WriteString(`
+## Cursor
+
+Cursor's hooks, in .cursor/hooks.json, run launch.sh with sh, one command per event, such as:
+
+    ` + shCommand(ev) + `
+
+` + "`grep`" + ` passes on the recorder's answer, and ` + "`echo`" + ` gives Cursor a safe answer when the
+launcher gives none, so Cursor is never blocked by accident. Cursor on Windows runs hooks
+through PowerShell, which can't run these, so Cursor records nothing there (it isn't blocked).
+` + "`sigdek init --windows`" + ` writes hooks that work there too.
+`)
+	case CursorBoth:
+		lines := strings.Split(dualPS(ev), " ; ")
+		b.WriteString(`
+## Cursor
+
+Cursor runs hook commands through a POSIX shell (sh, bash or zsh) on macOS and Linux and
+through PowerShell on Windows, and this file is shared by everyone. So each command in .cursor/hooks.json is written to be
+read by sh as one program and by PowerShell as another. For preToolUse, the command is:
+
+    ` + dualCommand(ev) + `
+
+sh reads ` + "`\\'`" + ` as a plain quote character, and everything up to the next ` + "`'`" + ` as one quoted
+argument. So it runs ` + "`set`" + ` with that one argument (which only sets sh's own argument list),
+then its own half, and ignores ` + "`#'`" + `, a comment. What sh runs:
+
+    ` + dualSh(ev) + `
+
+PowerShell reads ` + "`\\`" + ` as a plain character and ` + "`'`" + ` as the start of a string. So it runs these
+statements, one per line here:
+
+    set \'sigdek'
+    ` + strings.Join(lines, "\n    ") + `
+    $null = ' ; ` + dualSh(ev) + ` #'
+
+` + "`set \\'sigdek'`" + ` keeps the input Cursor pipes in, in a variable named ` + "`\\sigdek`" + `, and the next
+lines pass it to launch.ps1 (or, when nothing was piped in, let launch.ps1 read it itself). The
+last line assigns sh's half to ` + "`$null`" + `, as text, which discards it. So each shell's extra
+statement does nothing but hold the other shell's half as text, and neither half runs anything
+from the hook's input. Both halves give Cursor a safe answer when the launcher gives none, so
+Cursor is never blocked by accident. The other events' commands differ only in the event name
+and the safe answer.
+` + policy)
+	case CursorPowerShell:
+		b.WriteString(`
+## Cursor
+
+Cursor's hooks, in .cursor/hooks.json, run launch.ps1 with Windows PowerShell, one command per
+event, such as:
+
+    ` + psCommand(ev) + `
+
+They need a command named ` + "`powershell`" + `, so Cursor on macOS and Linux records nothing with them
+(PowerShell 7 installs only ` + "`pwsh`" + ` there). launch.ps1 catches its own errors and gives Cursor a
+safe answer. But if launch.ps1 is missing, empty or can't be read, the command gives Cursor no
+answer: Cursor lets a failed hook through unless its failClosed setting is on, and its docs
+don't say how it treats an empty answer from a permission hook. ` + "`sigdek init --windows`" + `
+writes hooks that work on Windows, macOS and Linux and always answer.
+` + policy)
+	case CursorMixed, CursorOlder:
+		b.WriteString(`
+## Cursor
+
+Cursor's hooks, in .cursor/hooks.json, mix forms that different versions of ` + "`sigdek init`" + ` wrote.
+Run ` + "`sigdek init`" + ` again to write them all in one form; ` + "`sigdek status`" + ` says where they can run.
+`)
+	}
+	b.WriteString(`
 What is recorded: who ran which agent, which tool, the command or file path, and whether
 it ran or was blocked. Prompt text, file contents and command output are never recorded;
 secrets in commands are stripped. Nothing leaves your machine until you run ` + "`sigdek login`" + `.
 
 Source and documentation: https://github.com/tektonsoftware/sigdek
-`
+`)
+	return b.String()
+}
