@@ -23,7 +23,7 @@ jobs:
       # Whether this tag is the highest published version (the Publish step says).
       highest: ${{ steps.publish.outputs.highest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
       - name: Stop if the repository is still private
@@ -31,9 +31,11 @@ jobs:
         run: |
           echo "::error::tektonsoftware/sigdek is still private, so nobody could download this release, and npm would publish it without provenance for good. Make the repository public, then delete this tag and push it again (a re-run keeps the private flag of the original push)."
           exit 1
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
+          # The release is built from source alone, with no build cache from an earlier run.
+          cache: false
       - name: Test
         run: go test ./...
       - name: Build
@@ -215,7 +217,7 @@ jobs:
           rm -rf dist && mv release dist
       - name: Build the npm packages
         run: node scripts/npm-packages.mjs "${GITHUB_REF_NAME#v}" dist npm-out
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
@@ -262,7 +264,7 @@ jobs:
             git commit -m "release: pin plugins, Homebrew and Scoop to v$version"
             git push origin main
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: steps.publish.outputs.highest == 'true'
         with:
           name: winget-manifests
@@ -275,7 +277,7 @@ jobs:
     if: needs.release.outputs.highest == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: winget-manifests
           path: winget
