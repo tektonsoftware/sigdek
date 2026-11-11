@@ -27,10 +27,13 @@ A hook must never block or break the agent by accident.
 - **Always exit 0.** Write to stdout only for a deny, or for Cursor's JSON answer.
 - **Hook commands, in `internal/initcmd/initcmd.go` and in both plugins' hook files:**
   - Claude Code: `sh "$CLAUDE_PROJECT_DIR/.sigdek/launch.sh" hook claude-code; exit 0`
-  - Cursor: `sh .sigdek/launch.sh hook cursor <event> | grep '^{' || echo '<safe answer>'`. Cursor always gets an answer, even from a missing, empty, directory or Git LFS-pointer launcher.
-  - The plugins use the same forms with `${CLAUDE_PLUGIN_ROOT}` / `${CURSOR_PLUGIN_ROOT}`.
-  - `sigdek status` must recognise the current forms and tell older repositories to re-run `sigdek init`.
-  - Windows PowerShell 5.1 has no `||`, so Windows Cursor teams use `--powershell`.
+  - Cursor has three forms, chosen by `ChooseCursorForm` from `DefaultCursorForm` (sh), the flags and what the project already has:
+    - **sh** (default on macOS and Linux, `--sh`): `sh .sigdek/launch.sh hook cursor <event> | grep '^{' || echo '<safe answer>'`. Cursor always gets an answer, even from a missing, empty, directory or Git LFS-pointer launcher.
+    - **dual** (`init` run on Windows, `--windows`, or kept once a project has it; `dualCommand`): one string that sh reads as the sh form and PowerShell reads as a call to launch.ps1, falling back to inherited stdin when nothing is piped. Both halves always answer. Windows PowerShell 5.1 has no `||`, which is why it exists. Not yet tried in real Cursor on Windows.
+    - **PowerShell only** (`--powershell`): gives no answer when launch.ps1 is missing, empty or refused.
+    - Both PowerShell forms run `powershell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned`. 0.1.0's `Bypass` form still counts as current.
+  - The plugins use the sh forms with `${CLAUDE_PLUGIN_ROOT}` / `${CURSOR_PLUGIN_ROOT}`. The plugin launcher steps aside for `hook` calls only (at the top of a `sigdek init` project), so `/sigdek:connect` and `login` run everywhere.
+  - `sigdek status` must recognise the current forms, parse the hook files as the agents do, and tell older repositories to re-run `sigdek init`.
 - **Launchers:**
   - The sources are `internal/initcmd/templates/launch.sh` and `launch.ps1`. Each is pinned to a recorder version and SHA-256 by `.sigdek/recorder.lock`.
   - After editing one, run `scripts/sync-plugins.sh` to copy it into both plugins (CI fails on drift).
