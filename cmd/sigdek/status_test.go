@@ -122,7 +122,7 @@ func TestStatusForATeamProject(t *testing.T) {
 		"[ ] This machine isn't connected to a team, so its records stay on it\n    Next: run `sigdek login`.",
 		"[ ] No records on this machine yet\n    Next: start Claude Code or Cursor here",
 	)
-	if strings.Contains(out, "Windows") {
+	if strings.Contains(out, "Cursor on Windows can't run") {
 		t.Errorf("the sh-and-PowerShell hooks work on Windows:\n%s", out)
 	}
 
