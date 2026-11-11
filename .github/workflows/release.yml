@@ -1,6 +1,7 @@
 name: release
 
-# Push a tag like v0.3.0 to publish binaries for every platform, then pin the plugins to them.
+# Push a tag like v0.3.0 to publish binaries for every platform, then, if it's the highest
+# published version, pin the plugins to them.
 on:
   push:
     tags: ['v*.*.*']
@@ -12,6 +13,15 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # One run per tag at a time: a run for a tag that's deleted and pushed again waits for the
+    # one before it to finish, instead of publishing alongside it. (GitHub keeps only the
+    # newest waiting run.)
+    concurrency:
+      group: release-${{ github.ref_name }}
+      cancel-in-progress: false
+    outputs:
+      # Whether this tag is the highest published version (the Publish step says).
+      highest: ${{ steps.publish.outputs.highest }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,39 +53,143 @@ jobs:
           cp install.sh dist/
           cd dist && sha256sum sigdek_* > checksums.txt && cat checksums.txt
       - name: Publish the release
+        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           # Releases are immutable: once one is published, its files can't be added, replaced or
-          # removed. So the release is made as a draft holding every file, checked, and only then
-          # published. A re-run (after a later step failed) reuses the release that's there and
-          # its files from here on, so npm, the plugins and the manifests pin exactly those bytes.
+          # removed. So the release is made as a draft, then downloaded afresh, as GitHub stores
+          # it, and published only if that copy holds exactly the files in dist/ (by name), its
+          # checksums.txt has a well-formed line for each binary and nothing else, every binary
+          # matches its line (sha256sum --check --strict), checksums.txt is this run's byte for
+          # byte, and install.sh is this tag's. So a draft left by an earlier run, or a release an
+          # earlier run published, is used only if it's this run's build (the toolchain is pinned,
+          # so a re-run of the same commit builds the same bytes). A re-run after a later step
+          # failed reuses the published release, checked that way, and its files from here on,
+          # so npm, the plugins and the manifests pin exactly those bytes. Nothing is created or
+          # published once the tag points at another commit than this run's.
           tag=$GITHUB_REF_NAME
-          if ! draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); then
+          work=$(mktemp -d)
+          files() { (cd "$1" && LC_ALL=C ls -A); }
+          # Stops unless the tag still points at this run's commit. Once it's deleted and pushed
+          # again, the run for that push publishes it.
+          same_commit() {
+            if ! sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha); then
+              echo "::error::Couldn't find which commit the tag $tag points at (gh's message is above). If the tag was deleted, the run for its next push publishes it; otherwise run this again."
+              exit 1
+            fi
+            if [ "$sha" != "$GITHUB_SHA" ]; then
+              echo "::error::The tag $tag now points at another commit than this run's. Let the run for the new commit publish it."
+              exit 1
+            fi
+          }
+          # The release's files, by name, in $work/assets. A failed listing stops the step.
+          assets() {
+            if ! gh release view "$tag" --json assets --jq '.assets[].name' > "$work/assets"; then
+              echo "::error::Couldn't list the files of release $tag (gh's message is above). Run this again."
+              exit 1
+            fi
+            LC_ALL=C sort -o "$work/assets" "$work/assets"
+          }
+
+          # Every release, draft or published: whether this tag has one, and whether it's the
+          # highest published version, so it may become "latest" and main may be pinned to it.
+          if ! gh release list --limit 1000 --json tagName,isDraft > "$work/releases.json"; then
+            echo "::error::Couldn't list this repository's releases (gh's message is above). Run this again."
+            exit 1
+          fi
+          if [ "$(jq length "$work/releases.json")" -ge 1000 ]; then
+            echo "::error::This repository has 1000 releases or more, more than this step reads, so it can't be sure which exist. Raise the --limit of gh release list here."
+            exit 1
+          fi
+          mine=$(jq --arg tag "$tag" '[.[] | select(.tagName == $tag)] | length' "$work/releases.json")
+          if [ "$mine" -gt 1 ]; then
+            echo "::error::There are $mine releases for $tag, so gh can't tell which one it's working on. On the repository's releases page, delete the drafts for $tag that shouldn't be there, and run this again."
+            exit 1
+          fi
+          # Semver order (a prerelease comes before its release); tags that aren't semver, and
+          # drafts, don't count.
+          highest=$(jq -r --arg tag "$tag" '
+            def key: capture("^v(?<a>0|[1-9][0-9]*)\\.(?<b>0|[1-9][0-9]*)\\.(?<c>0|[1-9][0-9]*)(-(?<pre>[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*))?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$")
+              | [([.a, .b, .c] | map(tonumber)),
+                 (if .pre == null then [1] else [0] + (.pre | split(".") | map(if test("^[0-9]+$") then [0, tonumber] else [1, .] end)) end)];
+            ([$tag | key] | first) as $me
+            | if $me == null then false
+              else [.[] | select(.isDraft | not) | .tagName | strings | key] | all(. <= $me) end' "$work/releases.json")
+
+          # Only "release not found" means there's none yet, and only if the list agrees.
+          if draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2> "$work/view.err"); then
+            cat "$work/view.err" >&2
+          elif [ "$(cat "$work/view.err")" != "release not found" ]; then
+            cat "$work/view.err" >&2
+            echo "::error::Couldn't look up release $tag (gh's message is above). Run this again."
+            exit 1
+          elif [ "$mine" != 0 ]; then
+            echo "::error::gh found no release $tag, but the list of releases has one (gh says this when a lookup fails). Run this again."
+            exit 1
+          else
+            same_commit
             gh release create "$tag" dist/* --draft \
               --title "SigDek recorder $tag" \
               --notes "Binaries for macOS, Linux and Windows on x64 and arm64. Check them against checksums.txt, or let the launcher or install.sh do it."
             draft=true
           fi
-          rm -rf release && mkdir release
-          if [ -n "$(gh release view "$tag" --json assets --jq '.assets[].name')" ]; then
-            gh release download "$tag" --dir release
-          fi
+          case $draft in
+            true | false) ;;
+            *) echo "::error::gh said release $tag's isDraft is \"$draft\". Run this again."; exit 1 ;;
+          esac
+          # A release whose checksums.txt isn't this run's, byte for byte, holds another build.
+          rebuilt="was built from different files than this run (another commit, or a changed build)."
+
           if [ "$draft" = true ]; then
+            where="The draft release $tag"
+            fix="Delete the wrong files from the draft (gh release delete-asset $tag <file>), or the whole draft, and run this again; a re-run uploads any that are missing."
+            refix="Delete the whole draft (gh release delete $tag --yes; the tag stays) and run this again."
+            assets
+            if grep -qxF checksums.txt "$work/assets"; then
+              mkdir "$work/draft"
+              gh release download "$tag" --pattern checksums.txt --dir "$work/draft"
+              if ! cmp -s dist/checksums.txt "$work/draft/checksums.txt"; then
+                echo "::error::$where $rebuilt $refix"
+                exit 1
+              fi
+            fi
             # A draft still takes files: attach any that this run built and the draft lacks.
             for f in dist/*; do
-              if [ ! -e "release/${f#dist/}" ]; then
-                gh release upload "$tag" "$f"
-                cp "$f" release/
-              fi
+              grep -qxF "${f#dist/}" "$work/assets" || gh release upload "$tag" "$f"
             done
+          else
+            where="The published release $tag"
+            fix="A published release can't change, so the fix is a new version."
+            refix=$fix
           fi
-          if ! (cd release && sha256sum --check checksums.txt); then
-            if [ "$draft" = true ]; then
-              echo "::error::The draft release $tag has files that are missing or don't match its checksums.txt (listed above). Delete the wrong files from the draft (gh release delete-asset $tag <file>), or the whole draft, and run this again."
-            else
-              echo "::error::The published release $tag has files that are missing or don't match its checksums.txt (listed above). A published release can't change, so the fix is a new version."
+
+          # The release as GitHub stores it, downloaded afresh.
+          assets
+          rm -rf release && mkdir release
+          if [ -s "$work/assets" ]; then
+            gh release download "$tag" --dir release
+          fi
+          if [ -e release/checksums.txt ] && ! cmp -s dist/checksums.txt release/checksums.txt; then
+            echo "::error::$where $rebuilt $refix"
+            exit 1
+          fi
+          files dist > "$work/want"
+          files release > "$work/got"
+          if ! cmp -s "$work/want" "$work/assets" || ! cmp -s "$work/want" "$work/got"; then
+            echo "Files this run built (<) and files in the release (>):"
+            diff "$work/want" "$work/assets" || true
+            if ! cmp -s "$work/assets" "$work/got"; then
+              echo "Files the release lists (<) and files its download held (>):"
+              diff "$work/assets" "$work/got" || true
             fi
+            echo "::error::$where doesn't hold exactly the files this run built (listed above). $fix"
+            exit 1
+          fi
+          grep -vxF -e checksums.txt -e install.sh "$work/want" > "$work/binaries"
+          sed -n 's/^[0-9a-f]\{64\} [ *]//p' release/checksums.txt | LC_ALL=C sort > "$work/listed"
+          if ! (cd release && sha256sum --check --strict checksums.txt) || ! cmp -s "$work/binaries" "$work/listed"; then
+            echo "::error::$where has files that don't match its checksums.txt, or a checksums.txt that doesn't list each binary once in sha256sum's format (listed above). $fix"
             exit 1
           fi
           # install.sh isn't in checksums.txt, so it's compared with this tag's copy instead.
@@ -83,15 +197,21 @@ jobs:
             if [ "$draft" = true ]; then
               echo "::error::The draft release $tag has an install.sh that differs from this tag's. Check which is right; to use the tag's, delete the draft's (gh release delete-asset $tag install.sh) and run this again."
             else
-              echo "::error::The published release $tag has no install.sh, or one that differs from this tag's. A published release can't change, so the fix is a new version."
+              echo "::error::The published release $tag has an install.sh that differs from this tag's. A published release can't change, so the fix is a new version."
             fi
             exit 1
           fi
+
           if [ "$draft" = true ]; then
-            gh release edit "$tag" --draft=false
+            same_commit
+            gh release edit "$tag" --draft=false --latest="$highest"
           else
             echo "::notice::$tag is already published; using its files."
           fi
+          if [ "$highest" != true ]; then
+            echo "::notice::$tag isn't the highest published version, so it isn't the latest release, and main's plugins and the Homebrew, Scoop and winget manifests stay on the newer one."
+          fi
+          echo "highest=$highest" >> "$GITHUB_OUTPUT"
           rm -rf dist && mv release dist
       - name: Build the npm packages
         run: node scripts/npm-packages.mjs "${GITHUB_REF_NAME#v}" dist npm-out
@@ -124,7 +244,9 @@ jobs:
           # Platform packages first, so the launcher never points at a version that isn't there.
           for d in npm-out/sigdek-*; do publish "$d"; done
           publish npm-out/sigdek
+      # Only for the highest version, so a re-run of an older tag never moves main back.
       - name: Pin the plugins to this release
+        if: steps.publish.outputs.highest == 'true'
         run: |
           version=${GITHUB_REF_NAME#v}
           git fetch origin main && git checkout main
@@ -141,6 +263,7 @@ jobs:
             git push origin main
           fi
       - uses: actions/upload-artifact@v4
+        if: steps.publish.outputs.highest == 'true'
         with:
           name: winget-manifests
           path: dist/winget
@@ -149,6 +272,7 @@ jobs:
   # request there, which Microsoft's checks and moderators approve (usually within days).
   winget:
     needs: release
+    if: needs.release.outputs.highest == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/download-artifact@v4
