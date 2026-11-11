@@ -65,13 +65,14 @@ type release struct {
 	mu     sync.Mutex
 	paths  []string // each request's path under base, in order
 
-	drops       map[string]int  // path -> how many more requests get half the body, then a closed connection
-	holds       map[string]bool // path -> send all but the last byte, then wait until the client goes away
-	lowerHeader bool            // send /latest's redirect as a raw "location:" header
+	drops       map[string]int   // path -> how many more requests get half the body, then a closed connection
+	holds       map[string]bool  // path -> send all but the last byte, then wait until the client goes away
+	answers     map[string][]int // path -> HTTP statuses to answer its next requests with, one each
+	lowerHeader bool             // send /latest's redirect as a raw "location:" header
 }
 
 func newRelease(t *testing.T, versions ...string) *release {
-	r := &release{latest: latest, files: map[string][]byte{}, drops: map[string]int{}, holds: map[string]bool{}}
+	r := &release{latest: latest, files: map[string][]byte{}, drops: map[string]int{}, holds: map[string]bool{}, answers: map[string][]int{}}
 	for _, v := range versions {
 		var sums strings.Builder
 		for _, tg := range targets {
@@ -96,10 +97,16 @@ func newRelease(t *testing.T, versions ...string) *release {
 			r.drops[p]--
 		}
 		hold, lower := r.holds[p], r.lowerHeader
+		status := 0
+		if q := r.answers[p]; len(q) > 0 {
+			status, r.answers[p] = q[0], q[1:]
+		}
 		r.mu.Unlock()
 		switch {
 		case !ok:
 			http.NotFound(w, req)
+		case status != 0:
+			http.Error(w, http.StatusText(status), status)
 		case p == "/latest" && tag == "":
 			http.Redirect(w, req, r.base, http.StatusFound)
 		case p == "/latest" && lower:
@@ -145,6 +152,13 @@ func (r *release) drop(path string, n int) {
 	r.drops[path] = n
 }
 
+// answer makes the next requests for path get these HTTP statuses, one each.
+func (r *release) answer(path string, statuses ...int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.answers[path] = statuses
+}
+
 func (r *release) set(path string, body []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -187,7 +201,18 @@ type machine struct {
 }
 
 func newMachine(t *testing.T, shell string, rel *release) *machine {
-	return &machine{t: t, shell: shell, rel: rel, home: t.TempDir(), tmp: t.TempDir(), path: os.Getenv("PATH")}
+	return &machine{t: t, shell: shell, rel: rel, home: realTempDir(t), tmp: realTempDir(t), path: os.Getenv("PATH")}
+}
+
+// realTempDir is a new temporary folder, by its physical path: install.sh prints the folder it
+// installs into that way, and on macOS t.TempDir is under /var, a link to /private/var.
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
 }
 
 // defaultDir is where install.sh installs without SIGDEK_INSTALL_DIR.
@@ -337,8 +362,9 @@ func TestReRunSaysSoOrUpdates(t *testing.T) {
 			t.Fatalf("first install: exit %d, stderr %q", r.code, r.stderr)
 		}
 		r := m.install()
-		if r.code != 0 || !strings.Contains(r.stdout, "\nsigdek at "+filepath.Join(dir, "sigdek")+" is already "+latest+".\n") ||
-			strings.Contains(r.stdout, "Installed") || strings.Contains(r.stdout, "Checked") {
+		// It says only that it's already there: not "Installing", "Checked" or "Installed".
+		if r.code != 0 || !strings.HasPrefix(r.stdout, "sigdek at "+filepath.Join(dir, "sigdek")+" is already "+latest+".\n") ||
+			strings.Contains(r.stdout, "Install") || strings.Contains(r.stdout, "Checked") {
 			t.Fatalf("same version again: exit %d, stdout:\n%s\nstderr %q", r.code, r.stdout, r.stderr)
 		}
 		if n := rel.requests(bin); n != 1 {
@@ -479,7 +505,7 @@ func TestPathHints(t *testing.T) {
 
 		// A folder outside HOME is shown as it is.
 		m = newMachine(t, sh, rel)
-		outside := filepath.Join(t.TempDir(), "bin")
+		outside := filepath.Join(realTempDir(t), "bin")
 		if r := m.install("SIGDEK_INSTALL_DIR=" + outside); !strings.Contains(r.stdout, `  export PATH="`+outside+`:$PATH"`) {
 			t.Fatalf("outside HOME: stdout:\n%s", r.stdout)
 		}
@@ -664,6 +690,37 @@ func TestWithoutCurl(t *testing.T) {
 		fresh = newMachine(t, sh, rel)
 		fresh.path = noCurl
 		refused(t, fresh.install("SIGDEK_RELEASE_BASE="+gone.URL+"/releases"), "couldn't reach "+gone.URL+"/releases/latest to find the latest version (")
+
+		// An HTTP error from /latest itself: tried again, then named. One from the release page
+		// it redirects to doesn't count.
+		rel.set(bin, fakeBinary(latest, hostTarget())) // back, after the missing-binary case
+		before = rel.requests("/latest")
+		rel.answer("/latest", 503, 503, 503)
+		fresh = newMachine(t, sh, rel)
+		fresh.path = noCurl
+		refused(t, fresh.install(), "couldn't find the latest version: "+rel.base+"/latest answered with HTTP status 503, 3 times.")
+		if n := rel.requests("/latest") - before; n != 3 {
+			t.Errorf("with wget, /latest answering 503: %d requests, want 3", n)
+		}
+		rel.answer("/tag/v"+latest, 503)
+		fresh = newMachine(t, sh, rel)
+		fresh.path = noCurl
+		if r := fresh.install(); r.code != 0 {
+			t.Fatalf("with wget, the release page answering 503: exit %d, stderr %q", r.code, r.stderr)
+		}
+		installed(t, fresh.defaultDir(), latest, hostTarget())
+
+		// Through localhost, which wget may try at ::1 first (refused: the server is on
+		// 127.0.0.1), a dropped download's reason is the drop, not that refusal.
+		local := strings.Replace(rel.base, "127.0.0.1", "localhost", 1)
+		rel.drop(bin98, 3)
+		fresh = newMachine(t, sh, rel)
+		fresh.path = noCurl
+		r = fresh.install("SIGDEK_RELEASE_BASE="+local, "SIGDEK_VERSION=0.0.98")
+		refused(t, r, "the download of "+local+"/download/v0.0.98/sigdek_0.0.98_"+hostTarget()+" failed (Connection closed at byte ")
+		if strings.Contains(r.stderr, "refused") {
+			t.Errorf("with wget through localhost, a drop is reported as a refused connection: %q", r.stderr)
+		}
 	})
 }
 
@@ -897,6 +954,121 @@ func TestTildeInInstallFolder(t *testing.T) {
 
 		m = newMachine(t, sh, rel)
 		refused(t, m.install(`SIGDEK_INSTALL_DIR=~/tools`, "HOME="), "HOME isn't set, so the ~ in SIGDEK_INSTALL_DIR can't be expanded.")
+
+		// Any other ~ is refused, before any request, rather than made into a folder named ~root
+		// (which rm -rf ~root, to remove it, would take as root's home folder).
+		before := rel.requests("")
+		for _, d := range []string{`~root/bin`, `~nosuchuser-5f19`, `~~/bin`, `~-/bin`} {
+			m = newMachine(t, sh, rel)
+			refused(t, m.install("SIGDEK_INSTALL_DIR="+d), "SIGDEK_INSTALL_DIR starts with a ~ that this script can't expand (only ~ and ~/ are). Write the full path, or use $HOME.")
+			if left, _ := os.ReadDir(m.home); len(left) > 0 {
+				t.Errorf("%s: made %s", d, left[0].Name())
+			}
+		}
+		if n := rel.requests("") - before; n != 0 {
+			t.Errorf("a ~user folder made %d requests before it was refused", n)
+		}
+	})
+}
+
+// The paths install.sh prints are the folder it installed into, with ., .. and symlinks
+// resolved, and HOME still shown as $HOME in the profile line.
+func TestPrintedPathsAreTheFolder(t *testing.T) {
+	eachShell(t, func(t *testing.T, sh string) {
+		rel := newRelease(t, latest)
+
+		m := newMachine(t, sh, rel) // runs in m.home
+		r := m.install("SIGDEK_INSTALL_DIR=.")
+		installed(t, m.home, latest, hostTarget())
+		for _, want := range []string{
+			"Installing SigDek " + latest + " (" + strings.Replace(hostTarget(), "_", "/", 1) + ") in " + m.home + ".\n",
+			"Installed " + filepath.Join(m.home, "sigdek") + ": ",
+			`  export PATH="$HOME:$PATH"` + "\n",
+		} {
+			if r.code != 0 || !strings.Contains(r.stdout, want) {
+				t.Errorf("SIGDEK_INSTALL_DIR=.: stdout lacks %q:\n%s", want, r.stdout)
+			}
+		}
+		if strings.Contains(r.stdout, m.home+"/.") {
+			t.Errorf("SIGDEK_INSTALL_DIR=.: stdout has a /.:\n%s", r.stdout)
+		}
+
+		// .. in a part that doesn't exist yet, as mkdir -p makes it.
+		m = newMachine(t, sh, rel)
+		r = m.install("SIGDEK_INSTALL_DIR=" + m.home + "/new/./../bin/")
+		installed(t, filepath.Join(m.home, "bin"), latest, hostTarget())
+		if want := " in " + filepath.Join(m.home, "bin") + ".\n"; r.code != 0 || !strings.Contains(r.stdout, want) ||
+			!strings.Contains(r.stdout, `  export PATH="$HOME/bin:$PATH"`) || strings.Contains(r.stdout, "..") {
+			t.Errorf("new/./../bin: stdout:\n%s", r.stdout)
+		}
+
+		// HOME through a symlink: the physical folder, and $HOME in the profile line.
+		m = newMachine(t, sh, rel)
+		link := filepath.Join(realTempDir(t), "home")
+		os.Symlink(m.home, link)
+		r = m.install("HOME=" + link)
+		installed(t, m.defaultDir(), latest, hostTarget())
+		if r.code != 0 || !strings.Contains(r.stdout, "Installed "+filepath.Join(m.defaultDir(), "sigdek")+": ") ||
+			!strings.Contains(r.stdout, `  export PATH="$HOME/.local/bin:$PATH"`) {
+			t.Errorf("HOME through a symlink: stdout:\n%s", r.stdout)
+		}
+	})
+}
+
+// A folder whose name a shell would read as code gets a profile line that sets PATH to the
+// folder, and runs nothing, in sh, csh and fish.
+func TestProfileLineQuotesTheFolder(t *testing.T) {
+	eachShell(t, func(t *testing.T, sh string) {
+		rel := newRelease(t, latest)
+		for _, name := range []string{"a\"b$(touch pwned)`touch pwned`", `it's`, `back\slash\`, `$HOME`, `a!b`} {
+			for _, under := range []bool{true, false} {
+				m := newMachine(t, sh, rel)
+				parent := m.home
+				if !under {
+					parent = realTempDir(t)
+				}
+				dir := filepath.Join(parent, name)
+				for _, c := range []struct{ shell, run string }{
+					{"/bin/zsh", "sh"},
+					{"/bin/csh", "csh"},
+					{"/usr/bin/fish", "fish"},
+				} {
+					r := m.install("SIGDEK_INSTALL_DIR="+dir, "SHELL="+c.shell)
+					if r.code != 0 {
+						t.Fatalf("%q: exit %d, stderr %q", dir, r.code, r.stderr)
+					}
+					_, after, _ := strings.Cut(r.stdout, "then open a new terminal:\n  ")
+					line, _, _ := strings.Cut(after, "\n")
+					if !under && strings.Contains(line, "$HOME") && name != "$HOME" {
+						t.Errorf("%q: the line uses $HOME: %s", dir, line)
+					}
+					shell, err := exec.LookPath(c.run)
+					if err != nil {
+						continue
+					}
+					// Run the line in that shell, in a folder of its own, and read PATH back.
+					runDir := realTempDir(t)
+					args := []string{"-c", line + "; /usr/bin/env printenv PATH"}
+					switch c.run {
+					case "csh":
+						args = append([]string{"-f"}, args...)
+					case "fish":
+						args = append([]string{"--no-config"}, args...)
+					}
+					cmd := exec.Command(shell, args...)
+					cmd.Dir = runDir
+					cmd.Env = []string{"HOME=" + m.home, "PATH=/usr/bin:/bin", "XDG_CONFIG_HOME=" + runDir, "XDG_DATA_HOME=" + runDir}
+					out, err := cmd.Output()
+					got, _, _ := strings.Cut(strings.TrimSpace(string(out)), ":")
+					if err != nil || got != dir {
+						t.Errorf("%s ran %s and set PATH's first folder to %q (%v), want %q", c.run, line, got, err, dir)
+					}
+					if _, err := os.Stat(filepath.Join(runDir, "pwned")); err == nil {
+						t.Errorf("%s ran a command in the folder's name: %s", c.run, line)
+					}
+				}
+			}
+		}
 	})
 }
 

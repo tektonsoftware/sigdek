@@ -37,7 +37,7 @@ A hook command never stops the agent on its own: when the launcher is missing or
 | Where | Install |
 |---|---|
 | Any OS, with Node.js | `npm install -g sigdek` |
-| macOS and Linux, without Node.js | `curl -fsSL https://sigdek.com/install.sh \| sh`, or without curl, `wget -qO- https://sigdek.com/install.sh \| sh` |
+| macOS and Linux, without Node.js | `curl -fsSL https://sigdek.com/install.sh \| sh`, or without curl, `wget -qO- https://sigdek.com/install.sh \| sh` (wget's certificate checking depends on how it was built; prefer curl) |
 | Windows, Scoop | `scoop bucket add sigdek https://github.com/tektonsoftware/sigdek` then `scoop install sigdek` |
 | Windows, winget | `winget install TektonSoftware.SigDek`, available a few days after each release, once Microsoft merges its pull request |
 | Go 1.24 or later | `go install github.com/tektonsoftware/sigdek/cmd/sigdek@latest` |

@@ -2,14 +2,15 @@
 # Installs the SigDek recorder's `sigdek` command on macOS or Linux, without Node.js:
 #
 #   curl -fsSL https://sigdek.com/install.sh | sh
-#   wget -qO- https://sigdek.com/install.sh | sh     (on a machine without curl)
+#   wget -qO- https://sigdek.com/install.sh | sh     (without curl; wget's certificate checking
+#                                                      depends on how it was built, so prefer curl)
 #
 # It downloads the release binary for this machine from
 # https://github.com/tektonsoftware/sigdek/releases, checks its SHA-256 against that release's
 # checksums.txt, and puts it at ~/.local/bin/sigdek. It never uses sudo, writes only to that
-# folder (creating it if needed) and to a temporary folder that it removes, and never edits
-# your shell profile. (Where wget is wget2, as on recent Fedora, wget2 may also update its own
-# caches in your home folder.)
+# folder (creating it, and any missing parents, if needed) and to a temporary folder that it
+# removes, and never edits your shell profile. (Where wget is wget2, as on recent Fedora, wget2
+# may also update its own caches in your home folder.)
 #
 # Releases are immutable: once a release is published, its files and tag can't be changed, and
 # GitHub attaches an attestation to each. The checksum still comes from the same release as the
@@ -27,7 +28,9 @@
 #                             https://github.com/tektonsoftware/sigdek/releases, the base under
 #                             which /latest and /download/v<version>/ live
 #
-# Source: https://github.com/tektonsoftware/sigdek/blob/main/install.sh
+# Source: https://github.com/tektonsoftware/sigdek/blob/main/install.sh. Each release carries the
+# copy at that release's tag, and sigdek.com/install.sh serves the latest release's:
+# https://github.com/tektonsoftware/sigdek/releases/latest/download/install.sh
 
 tell() { printf '%s\n' "$*"; }
 
@@ -41,42 +44,82 @@ die() {
 # (under 1 KB/s for a minute) as failed, so a slow download that keeps moving isn't cut off.
 # GNU Wget gives up after 60 seconds without data, and keeps its HSTS list in the temporary
 # folder. It still follows a redirect to plain http: its --https-only covers only recursive
-# downloads. Other wgets (BusyBox, wget2) get plain flags. Whether a wget checks certificates
-# depends on how it was built (some BusyBox builds don't).
+# downloads. It writes its full messages (not -nv's), so a failure's reason is in them. Other
+# wgets (BusyBox, wget2) get plain flags. Whether a wget checks certificates depends on how it
+# was built (some BusyBox builds don't).
 fetch() {
   if [ "$GET" = curl ]; then
     curl -fsSL --proto "$PROTO" --connect-timeout 15 --speed-limit 1024 --speed-time 60 -o "$2" "$1"
   elif [ -n "$GNU" ]; then
-    wget -nv --tries=1 -T 60 ${HTTPS:+--https-only} ${HSTS:+"--hsts-file=$TMP/wget-hsts"} -O "$2" "$1"
+    wget --progress=dot:giga --tries=1 -T 60 ${HTTPS:+--https-only} ${HSTS:+"--hsts-file=$TMP/wget-hsts"} -O "$2" "$1"
   else
     wget -q -T 60 -O "$2" "$1"
   fi
 }
 
-# follow <url>: one try at following url's redirects. curl writes the address it ends at
-# to $TMP/latest; wget prints each response's headers, Location among them. An HTTP error
-# still counts as an answer here: latest looks at where the redirect went.
+# follow <url>: one try at following url's redirects, which sets URL to the address it ends at.
+# An HTTP error from url itself (4xx or 5xx) is a failed try, with its status in STATUS; one
+# from the page it redirects to isn't, since latest only looks at where the redirect went.
 follow() {
+  STATUS=
+  URL=
   if [ "$GET" = curl ]; then
-    curl -sSIL --proto "$PROTO" --connect-timeout 15 --max-time 60 -o /dev/null -w '%{url_effective}' "$1" >"$TMP/latest"
-  elif [ -n "$GNU" ]; then
-    wget -nv -S --tries=1 -T 60 ${HTTPS:+--https-only} ${HSTS:+"--hsts-file=$TMP/wget-hsts"} -O /dev/null "$1" || [ $? -eq 8 ]
+    curl -sSIL --proto "$PROTO" --connect-timeout 15 --max-time 60 -o /dev/null \
+      -w '%{http_code} %{num_redirects} %{url_effective}\n' "$1" >"$TMP/latest" || return
+    # The last response's status, which is url's own only when nothing redirected.
+    first=
+    hops=
+    read -r first hops URL <"$TMP/latest" || true
+    [ "$hops" = 0 ] || first=
   else
-    wget -S -T 60 -O /dev/null "$1" || [ $? -eq 8 ]
+    # wget prints each response's headers (-S); exit status 8 is an HTTP error from any of them.
+    if [ -n "$GNU" ]; then
+      wget --progress=dot:giga -S --tries=1 -T 60 ${HTTPS:+--https-only} ${HSTS:+"--hsts-file=$TMP/wget-hsts"} -O /dev/null "$1" ||
+        { rc=$?; [ "$rc" -eq 8 ] || return "$rc"; }
+    else
+      wget -S -T 60 -O /dev/null "$1" || { rc=$?; [ "$rc" -eq 8 ] || return "$rc"; }
+    fi
+    first=$(tr -d '\r' <"$TMP/err" | sed -n 's/^ *HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p' | head -n 1)
+    URL=$(tr -d '\r' <"$TMP/err" | sed -n 's/^ *[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]: *\([^ ]*\).*/\1/p' | tail -n 1)
   fi
+  case "$first" in
+    [45][0-9][0-9])
+      STATUS=$first
+      tell "HTTP status $STATUS" >&2
+      return 1
+      ;;
+  esac
 }
 
 # persist <command> <url> [<argument>...]: runs the command up to 3 times, whatever the failure,
-# 2 seconds apart, with its messages in $TMP/err. On failure it returns the last try's exit
+# 2 seconds apart, with its messages in $TMP/err, except that it stops at once, saying so, when
+# the server's certificate couldn't be verified. On failure it returns the last try's exit
 # status, with that try's reason in $WHY.
 persist() {
   n=1
   while :; do
     "$@" 2>"$TMP/err" && return 0
     code=$?
-    # The last line curl or wget wrote, without control characters (it can quote the server).
-    WHY=$(awk 'NF { l = $0 } END { print l }' <"$TMP/err" | tr -d '[:cntrl:]')
-    [ -n "$WHY" ] || WHY="$GET exited with status $code"
+    # The reason: for curl, the first line it wrote (curl: (<code>) ...). For wget, the last line
+    # with ERROR, failed or unable in it, else its last line, counting only what it wrote after
+    # its last successful connection (a failed try at another address, such as IPv6, comes
+    # before it) and never its advice to turn certificate checking off. Then wget's timestamp
+    # and speed go, and so do control characters (it can quote the server).
+    WHY=$(awk -v get="$GET" '
+      get == "curl" { if (NF && l == "") l = $0; next }
+      / connected\.$/ { e = ""; l = ""; next }
+      /no-check-certificate|insecurely/ { next }
+      /ERROR|failed|unable/ { e = $0 }
+      NF { l = $0 }
+      END { print (e != "" ? e : l) }' <"$TMP/err" | tr -d '[:cntrl:]' |
+      sed -e 's/^[0-9][0-9-]* [0-9][0-9:]* //' -e 's/^([^)]*) - //')
+    [ -n "$WHY" ] || WHY="$GET: exit $code"
+    # curl's and wget's exit status when the certificate couldn't be verified. Trying again won't
+    # help, and checking must stay on.
+    case "$GET:$code" in
+      curl:60 | curl:35) die "the certificate of the server for $2 couldn't be verified ($WHY), so nothing was installed. Certificate checking must stay on: fix the system's certificates, then run this again." ;;
+      wget:5) die "the certificate of the server for $2 couldn't be verified ($WHY), so nothing was installed. Certificate checking must stay on: use curl, or fix the system's certificates, then run this again." ;;
+    esac
     [ "$n" -lt 3 ] || return "$code"
     tell "Couldn't download $2 ($WHY). Trying again." >&2
     n=$((n + 1))
@@ -100,15 +143,12 @@ download() {
 # latest: sets VERSION to the version that $BASE/latest redirects to (a page ending in
 # /tag/v<version>), without the GitHub API and its rate limits.
 latest() {
-  persist follow "$BASE/latest" ||
+  if ! persist follow "$BASE/latest"; then
+    [ -z "$STATUS" ] || die "couldn't find the latest version: $BASE/latest answered with HTTP status $STATUS, 3 times. Run this again in a few minutes."
     die "couldn't reach $BASE/latest to find the latest version ($WHY). Check the network connection and run this again."
-  if [ "$GET" = curl ]; then
-    url=$(cat "$TMP/latest")
-  else
-    url=$(tr -d '\r' <"$TMP/err" | sed -n 's/^ *[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]: *\([^ ]*\).*/\1/p' | tail -n 1)
   fi
-  case "$url" in
-    */tag/v*) VERSION=${url##*/tag/v} ;;
+  case "$URL" in
+    */tag/v*) VERSION=${URL##*/tag/v} ;;
     *) die "couldn't find the latest version at $BASE/latest. Set SIGDEK_VERSION to the version you want, after the pipe: curl -fsSL https://sigdek.com/install.sh | SIGDEK_VERSION=0.1.0 sh" ;;
   esac
 }
@@ -131,6 +171,43 @@ physical() {
     *) p=./$1 ;;
   esac
   (cd "$(printf '%s' "$p" | tr -s /)" 2>/dev/null && pwd -P) || true
+}
+
+# canonical <absolute path>: the path as pwd -P will give it once the folder exists: its longest
+# part that is a folder now, with symlinks resolved, then the rest with . and .. resolved, as
+# mkdir -p makes it.
+canonical() {
+  known=$1
+  more=
+  until [ -d "$known" ] && real=$(cd "$known" 2>/dev/null && pwd -P); do
+    case "$known" in
+      */*)
+        more=${known##*/}/$more
+        known=${known%/*}
+        ;;
+      *)
+        more=$known/$more
+        known=
+        ;;
+    esac
+    [ -n "$known" ] || known=/
+  done
+  while [ -n "$more" ]; do
+    part=${more%%/*}
+    more=${more#*/}
+    case "$part" in
+      '' | .) ;;
+      ..) real=${real%/*} ;;
+      *) real=${real%/}/$part ;;
+    esac
+    [ -n "$real" ] || real=/
+  done
+  printf '%s\n' "$real"
+}
+
+# verbatim <text>: text in single quotes, as one shell word, with each ' in it written as '\''.
+verbatim() {
+  printf "'%s'" "$(printf '%s\n' "$1" | sed "s/'/'\\\\''/g")"
 }
 
 # cleanup removes what's left of the install's own files, and doesn't stop if a removal fails.
@@ -218,6 +295,10 @@ main() {
         DIR=$HOME${DIR#'~'}
         ;;
     esac
+    # Any other ~, as in ~user/bin, would make a folder named ~user.
+    case "$DIR" in
+      '~'*) die "SIGDEK_INSTALL_DIR starts with a ~ that this script can't expand (only ~ and ~/ are). Write the full path, or use \$HOME. $SETDIR" ;;
+    esac
   elif [ -n "${HOME:-}" ]; then
     DIR=$HOME/.local/bin
   else
@@ -227,11 +308,10 @@ main() {
     /*) ;;
     *) DIR=$(pwd)/$DIR ;;
   esac
-  DIR=$(printf '%s' "$DIR" | tr -s /)
-  DIR=${DIR%/}
-  if [ -z "$DIR" ] || [ "$(physical "$DIR")" = / ]; then
-    die "SIGDEK_INSTALL_DIR can't be the root folder, /. $SETDIR"
-  fi
+  # The folder as it will be: symlinks, ., .. and repeated slashes resolved, so that what this
+  # prints is where sigdek is.
+  DIR=$(canonical "$(printf '%s' "$DIR" | tr -s /)")
+  [ "$DIR" != / ] || die "SIGDEK_INSTALL_DIR can't be the root folder, /. $SETDIR"
   TARGET=$DIR/sigdek
   [ ! -d "$TARGET" ] || die "$TARGET is a folder, so sigdek can't be installed there. $SETDIR"
 
@@ -247,7 +327,6 @@ main() {
   fi
   NAME=sigdek_${VERSION}_${OS}_${ARCH}
   FROM=$BASE/download/v$VERSION
-  tell "Installing SigDek $VERSION ($OS/$ARCH) in $DIR."
 
   download "$FROM/checksums.txt" "$TMP/checksums.txt" ". Check that v$VERSION is a SigDek release: $BASE"
   WANT=$(awk -v n="$NAME" '$2 == n || $2 == "*" n { print $1; exit }' <"$TMP/checksums.txt")
@@ -260,6 +339,7 @@ main() {
   if [ -f "$TARGET" ] && [ -x "$TARGET" ] && [ "$(checksum "$TARGET")" = "$WANT" ]; then
     CURRENT=yes
   else
+    tell "Installing SigDek $VERSION ($OS/$ARCH) in $DIR."
     download "$FROM/$NAME" "$TMP/$NAME" ", so nothing was installed."
     GOT=$(checksum "$TMP/$NAME")
     [ "$GOT" = "$WANT" ] || die "the downloaded $NAME doesn't match its SHA-256 in checksums.txt (got $GOT, expected $WANT), so nothing was installed."
@@ -305,16 +385,43 @@ main() {
     tell ""
     tell "Another sigdek, in $FOUND, comes before $DIR on your PATH, so the command sigdek runs that one. Remove it, or run this one as $TARGET."
   else
-    SHOWN=$DIR
+    # HOME as DIR spells it, so that a folder under it can be shown as $HOME/<rest>.
     H=
-    if [ -n "${HOME:-}" ]; then
-      H=$(printf '%s' "$HOME" | tr -s /)
-      H=${H%/}
-    fi
+    case "${HOME:-}" in
+      /*) H=$(canonical "$(printf '%s' "$HOME" | tr -s /)") ;;
+    esac
+    LEAD=
+    REST=$DIR
     if [ -n "$H" ]; then
-      case "$DIR" in "$H"/*) SHOWN="\$HOME/${DIR#"$H"/}" ;; esac
+      # shellcheck disable=SC2016 # a literal $HOME, for the profile line
+      case "$DIR" in
+        "$H") LEAD='$HOME' REST= ;;
+        "$H"/*) LEAD='$HOME' REST=/${DIR#"$H"/} ;;
+      esac
     fi
-    LINE="export PATH=\"$SHOWN:\$PATH\""
+    # The folder as the profile line writes it: in double quotes when it holds only letters,
+    # digits, spaces and _./@%+=:,- (as nearly every folder does), and otherwise in single
+    # quotes, so that no shell reads anything in its name as code. Inside single quotes, fish
+    # also takes \ as an escape, and csh takes !, so their lines escape those too.
+    case "$REST" in
+      *[![:alnum:]\ _./@%+=:,-]*)
+        WORD=$(verbatim "$REST")
+        FISHWORD=$(verbatim "$(printf '%s\n' "$REST" | sed 's/\\/\\\\/g')")
+        CSHWORD=$(verbatim "$(printf '%s\n' "$REST" | sed 's/!/\\!/g')")
+        if [ -n "$LEAD" ]; then
+          WORD="\"$LEAD\"$WORD"
+          FISHWORD="\"$LEAD\"$FISHWORD"
+          CSHWORD="\"$LEAD\"$CSHWORD"
+        fi
+        LINE="export PATH=$WORD:\"\$PATH\""
+        ;;
+      *)
+        WORD="\"$LEAD$REST\""
+        FISHWORD=$WORD
+        CSHWORD=$WORD
+        LINE="export PATH=\"$LEAD$REST:\$PATH\""
+        ;;
+    esac
     PROFILE=.profile
     case "${SHELL:-}" in
       */zsh) PROFILE=.zshrc ;;
@@ -332,12 +439,12 @@ main() {
           done
         fi
         ;;
-      */fish) PROFILE=.config/fish/config.fish LINE="fish_add_path \"$SHOWN\"" ;;
+      */fish) PROFILE=.config/fish/config.fish LINE="fish_add_path $FISHWORD" ;;
       */csh | */tcsh)
         # tcsh reads ~/.tcshrc instead of ~/.cshrc when there is one.
         PROFILE=.cshrc
         case "$SHELL" in */tcsh) if [ -n "$H" ] && [ -f "$H/.tcshrc" ]; then PROFILE=.tcshrc; fi ;; esac
-        LINE="set path = ( \"$SHOWN\" \$path )"
+        LINE="set path = ( $CSHWORD \$path )"
         ;;
     esac
     tell ""
