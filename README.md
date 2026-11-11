@@ -6,33 +6,159 @@ This repository is the open-source recorder that runs on developer machines, plu
 
 SigDek is a product of Tekton Software.
 
-## Install
+## Quick start
 
-**In a repository, for the whole team.** Every developer who clones the repository is covered, with nothing to install:
+Pick the path that fits. Each one is three steps.
 
-```sh
-npx sigdek init        # writes .claude/settings.json, .cursor/hooks.json and .sigdek/
-git add .claude .cursor .sigdek && git commit -m "Record agent activity with SigDek"
+- **[Just me, in Claude Code](#just-me-in-claude-code):** one person, in every project, with SigDek's Claude Code plugin.
+- **[Our team's project](#our-teams-project):** everyone who clones a repository, in Claude Code and in Cursor. Nothing to install for each teammate but one sign-in.
+- **[I use Cursor](#i-use-cursor):** today, the same steps as a team's project, because SigDek's Cursor plugin isn't listed on Cursor's marketplace yet.
+
+Every command says where it goes:
+
+- **In Claude Code's chat:** type it where you talk to Claude Code, then press Enter.
+- **In a terminal:** on macOS, press Command and Space, type Terminal, press Enter. On Windows, open Start, type PowerShell, press Enter. On Linux, open Terminal. In VS Code or Cursor, choose Terminal, then New Terminal: it opens in your project's folder already. Elsewhere, go to your project's folder first with `cd`, for example `cd ~/code/our-app`.
+
+**Do you have Node.js?** The `npx` commands need it. In a terminal, run `node -v`. `v18` or anything later is fine. If you see `command not found` or `is not recognized`, install the LTS version from [nodejs.org](https://nodejs.org/), then open a new terminal; or [install `sigdek` without Node.js](#other-ways-to-install-the-command) and type `sigdek` where these steps say `npx sigdek`.
+
+The first time you run `npx sigdek`, npx asks to download it, naming the current version:
+
+```
+Need to install the following packages:
+sigdek@0.1.0
+Ok to proceed? (y)
 ```
 
-**As a Claude Code plugin**, for one person across all their repositories:
+Press Enter to say yes.
+
+### Just me, in Claude Code
+
+1. **Add the recorder.** In Claude Code's chat:
+
+   ```
+   /plugin marketplace add tektonsoftware/sigdek
+   ```
+
+   You should see `Successfully added marketplace: sigdek`. Then, in Claude Code's chat:
+
+   ```
+   /plugin install sigdek@sigdek
+   ```
+
+   Claude Code shows what the plugin adds. Choose **Install for you (user scope)**. The summary ends with `Plugin is now active.`, or with `Run /reload-plugins to apply.`, and Claude Code then reloads for you.
+
+2. **Connect your machine.** In Claude Code's chat:
+
+   ```
+   /sigdek:connect
+   ```
+
+   Claude shows you a link and a code, and your browser opens SigDek's "Connect this machine?" page (sign in first if it asks). If the page shows the same code, choose **Connect machine**. Claude then tells you what SigDek printed, such as:
+
+   ```
+   Signed in as ana@larkspur.example to Larkspur Labs. This machine's records now upload in the background.
+   ```
+
+   You can do the same in a terminal with `npx sigdek login`, as in [Our team's project](#our-teams-project).
+
+3. **Watch Activity.** Use Claude Code as usual. When the agent finishes its turn, what it did uploads, and shows on the Activity page of your team's dashboard at [app.sigdek.com](https://app.sigdek.com). To check this machine, see [Did it work?](#did-it-work)
+
+### Our team's project
+
+1. **Add the recorder.** In a terminal, in your project's folder (the top folder, with the `.git` folder in it):
+
+   ```
+   npx sigdek init
+   ```
+
+   You should see:
+
+   ```
+   SigDek is set up in this repository. Commit these files:
+     .claude/settings.json
+     .cursor/hooks.json
+     .sigdek/launch.sh
+     .sigdek/launch.ps1
+     .sigdek/recorder.lock
+     .sigdek/README.md
+     .sigdek/.gitattributes
+
+   Next: run `sigdek login` to connect this machine to your team. Until then, records stay on this machine.
+   ```
+
+   Then commit the files and push them, in the same terminal:
+
+   ```
+   git add .claude .cursor .sigdek
+   git commit -m "Record agent activity with SigDek"
+   git push
+   ```
+
+2. **Connect your machine.** In a terminal:
+
+   ```
+   npx sigdek login
+   ```
+
+   You should see:
+
+   ```
+   Your code: ABCD-EFGH
+   Approve it at: https://app.sigdek.com/device?user_code=ABCDEFGH
+
+   Waiting for approval…
+   ```
+
+   Your browser opens SigDek's "Connect this machine?" page (sign in first if it asks). If it doesn't open, open the link yourself. If the page shows the same code, choose **Connect machine**. The terminal then says:
+
+   ```
+   Signed in as ana@larkspur.example to Larkspur Labs. This machine's records now upload in the background.
+   ```
+
+3. **Invite your team.** In the dashboard, an owner or admin opens People and chooses **Invite people**. Each teammate accepts, pulls the commit from step 1, and runs `npx sigdek login` once on their own machine. From then on, Claude Code and Cursor record for them whenever they start in the project's top folder, with nothing else to install.
+
+Then **watch Activity**: when an agent finishes its turn, what it did uploads and shows on the dashboard's Activity page.
+
+### I use Cursor
+
+SigDek's Cursor plugin isn't listed on Cursor's marketplace yet, so Cursor records through a project's own hooks: follow [Our team's project](#our-teams-project). The commands go in Cursor's terminal (Terminal, then New Terminal), which opens in your project's folder. Open that top folder as Cursor's workspace, because Cursor reads `.cursor/hooks.json` only from there. The same hooks work on macOS, Linux and Windows.
+
+### Did it work?
+
+In a terminal, in your project's folder:
 
 ```
-/plugin marketplace add tektonsoftware/sigdek
-/plugin install sigdek@sigdek
+npx sigdek status
 ```
 
-**As a Cursor plugin**: it isn't listed on the Cursor Marketplace yet (Cursor reviews each plugin by hand). Until it is, set up each repository with `sigdek init` (above), or, on Cursor's Teams and Enterprise plans, add it to a team marketplace with **Import from Repo** and `https://github.com/tektonsoftware/sigdek`, which lists the plugin in `.cursor-plugin/marketplace.json`.
+It answers as a checklist, without going online, and gives the next step for anything missing. When everything is set up, it looks like this:
 
-Then connect the machine to your team: `npx sigdek login`. Until you do, records stay on the machine.
+```
+sigdek 0.1.1 (darwin/arm64)
 
-With the plugin installed and `sigdek init` in a repository, the plugin steps aside when the agent starts at the repository's root, so each action is recorded once. Claude Code reads `.claude/settings.json` only from the folder a session starts in, and Cursor reads `.cursor/hooks.json` from the workspace root, so in a session started in a subdirectory the repository's hooks don't run and the plugin records instead. Cursor also runs Claude Code's hooks by default (its Third-Party Imports setting loads `.claude/settings.json`, `.claude/settings.local.json` and `~/.claude/settings.json`), so in a repository set up with `sigdek init` each Cursor action reaches SigDek's Claude Code hook as well as its Cursor hook. SigDek's Claude Code hook stands aside when Cursor runs it, so each Cursor action is recorded once, by the Cursor hook; Cursor's actions are recorded only through SigDek's Cursor hooks (`sigdek init` or the Cursor plugin). `.sigdek/.gitattributes` keeps the launchers' line endings right on Windows checkouts, and hooks run the launcher with `sh`, so it needs no exec bit.
+[x] Claude Code records in this project, through its hooks in .claude/settings.json
+[x] Cursor records in this project, through its hooks in .cursor/hooks.json
+[x] SigDek 0.1.1, the recorder this project pins, is downloaded and matches its checksum
+[x] Connected to Larkspur Labs as ana@larkspur.example
+[x] Uploads work: the last one finished just now, and nothing is waiting
+```
 
-A hook command never stops the agent on its own: when the launcher is missing or broken (a branch made before SigDek was added, `.sigdek` deleted or ignored by git, merge-conflict markers in `launch.sh`, an empty file), the command does nothing but give Cursor the answer it expects, and that checkout records nothing until the launcher is back. `sigdek init` warns when git ignores any file it wrote, and in a repository set up by an older version, `sigdek status` asks you to run `sigdek init` again for these commands. On Windows, Claude Code runs hooks through Git Bash; without Git Bash it uses PowerShell, where SigDek records nothing but still doesn't block. Cursor runs hooks through PowerShell on Windows, and Windows PowerShell 5.1 can't run the default commands (it has no `||`), so with the default `sigdek init` Cursor records nothing there, without blocking; `sigdek init` on Windows says so. The Cursor plugin's hooks use the same commands, so the plugin records nothing on Windows either. For Cursor on Windows, run `sigdek init --powershell`, whose hooks need PowerShell on every machine that uses Cursor.
+`[ ]` marks something missing, with the next step under it. `[-]` marks something you may not need, such as Cursor for someone who uses only Claude Code.
 
-### Getting the `sigdek` command
+### If something goes wrong
 
-`npx sigdek …` works anywhere Node.js is installed. To install the command instead:
+| What you see | What to do |
+|---|---|
+| `command not found: npx` (macOS, Linux), or `'npx' is not recognized` or `The term 'npx' is not recognized` (Windows) | Node.js isn't installed: install it from [nodejs.org](https://nodejs.org/), then open a new terminal. Or [install `sigdek` without Node.js](#other-ways-to-install-the-command). |
+| Claude Code doesn't know `/plugin` | Your Claude Code is too old for plugins: update it (`claude update` in a terminal), then start it again. |
+| The browser didn't open during "Connect your machine" | Open the `Approve it at:` link that `sigdek login` printed, or that Claude showed you. |
+| PowerShell says `running scripts is disabled on this system` | PowerShell's execution policy blocks npm's `npx.ps1`. Type `npx.cmd` instead of `npx`, or allow scripts for your account with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. |
+| Nothing shows in Activity | Run `npx sigdek status`: it names what's missing. Records upload when the agent finishes its turn, so wait for that, or run `npx sigdek flush`. |
+| Cursor on Windows records nothing | Run `npx sigdek status` in the project's folder. A project set up with SigDek 0.1.0 has Cursor hooks that Windows can't run: run `npx sigdek init` again there and commit the change. |
+
+## Other ways to install the command
+
+`npx sigdek …` works anywhere Node.js 18 or later is installed. To install the `sigdek` command instead, and type `sigdek` where these steps say `npx sigdek`:
 
 | Where | Install |
 |---|---|
@@ -75,7 +201,7 @@ SigDek writes one record (see [the schema](schema/agent-event.v1.schema.json)) f
 |---|---|
 | `sigdek init` | Add SigDek's hooks to the current repository. `--remove` takes them out, and `.sigdek/` once no hooks use it |
 | `sigdek login` / `logout` | Connect or disconnect this machine; sign-in happens in the browser. Logout asks the server that signed it in to revoke the machine's token and says if it couldn't. Agents are still recorded after logout, on the machine only; those records upload if it signs in to the same team again, and login says how many |
-| `sigdek status` | What is set up and working, and what isn't |
+| `sigdek status` | A checklist of what is set up and working here, and the next step for anything that isn't. It reads only local files |
 | `sigdek log` | Recent records from this machine |
 | `sigdek verify` | Check that no local record was changed or removed |
 | `sigdek flush` | Upload now (normally automatic, in the background), without waiting out a back-off |
@@ -84,7 +210,31 @@ SigDek writes one record (see [the schema](schema/agent-event.v1.schema.json)) f
 
 Teams set rules in the dashboard. A **Flag** rule marks matching actions in the report; a **Block** rule (`deny` in the API) stops them before they run, and tells the agent and the developer why. Until a machine signs in, 12 built-in rules ([schema/default-rules.json](schema/default-rules.json)) flag common risky actions (force pushes, recursive deletes, secrets files, infrastructure changes, destructive SQL, piping a download into a shell, publishing packages, privileged commands, history rewrites, and changes to SigDek's own setup) and block nothing. Patterns are globs (`*` matches anything; in paths `**` crosses `/`) or, with `re:`, RE2 regular expressions. Command and URL patterns are found anywhere in the text, path patterns match the whole path or any part after a `/`, and tool and MCP globs match the whole name: `Write` matches Write but not TodoWrite, and `github/merge_*` matches the server github but not mygithub. An MCP glob without `/` names the tool. Cursor's general `preToolUse` and `postToolUse` hooks, which SigDek uses, don't name the MCP server, so for Cursor an MCP pattern like `github/merge_*` matches on the tool part. Cursor's MCP-specific hooks do name it, but SigDek doesn't use them yet.
 
-## How it runs
+## How it works
+
+### Plugin and project hooks together
+
+With the plugin installed and `sigdek init` in a repository, the plugin steps aside when the agent starts at the repository's root, so each action is recorded once. Claude Code reads `.claude/settings.json` only from the folder a session starts in, and Cursor reads `.cursor/hooks.json` from the workspace root, so in a session started in a subdirectory the repository's hooks don't run and the plugin records instead. Only hook events step aside: a command you run through the plugin, such as `/sigdek:connect`, runs everywhere.
+
+### Cursor
+
+Cursor also runs Claude Code's hooks by default (its Third-Party Imports setting loads `.claude/settings.json`, `.claude/settings.local.json` and `~/.claude/settings.json`), so in a repository set up with `sigdek init` each Cursor action reaches SigDek's Claude Code hook as well as its Cursor hook. SigDek's Claude Code hook stands aside when Cursor runs it, so each Cursor action is recorded once, by the Cursor hook; Cursor's actions are recorded only through SigDek's Cursor hooks (`sigdek init` or the Cursor plugin).
+
+SigDek's Cursor plugin isn't listed on the Cursor Marketplace yet (Cursor reviews each plugin by hand). Until it is, set up each repository with `sigdek init`, or, on Cursor's Teams and Enterprise plans, add it to a team marketplace with **Import from Repo** and `https://github.com/tektonsoftware/sigdek`, which lists the plugin in `.cursor-plugin/marketplace.json`.
+
+### Windows
+
+On Windows, Claude Code runs hooks through Git Bash; without Git Bash it uses PowerShell, where SigDek records nothing but still doesn't block. `sigdek status` says when it can't find Git Bash.
+
+Cursor runs hooks through PowerShell on Windows. The Cursor commands `sigdek init` writes read as one program to sh, which runs `.sigdek/launch.sh` (macOS and Linux), and as another to PowerShell, which runs `.sigdek/launch.ps1` (Windows PowerShell 5.1 and PowerShell 7), so the one committed `.cursor/hooks.json` works for everyone. CI checks this by running each command inside the PowerShell wrapper Cursor uses on Windows; it hasn't been tried in the Cursor app on Windows yet. A repository set up with SigDek 0.1.0 has sh-only Cursor commands, which Windows PowerShell 5.1 can't run (it has no `||`): there Cursor records nothing on Windows, without blocking, until someone runs `sigdek init` again and commits the change; `sigdek status` says so. `sigdek init --powershell` still writes PowerShell-only Cursor commands, which then need PowerShell on every machine that uses Cursor. The Cursor plugin's hooks are sh-only, so the plugin records nothing on Windows.
+
+### Line endings, and a missing launcher
+
+`.sigdek/.gitattributes` keeps the launchers' line endings right on Windows checkouts, and hooks run the launcher with `sh` (or PowerShell), so it needs no exec bit.
+
+A hook command never stops the agent on its own: when the launcher is missing or broken (a branch made before SigDek was added, `.sigdek` deleted or ignored by git, merge-conflict markers in `launch.sh`, an empty file), the command does nothing but give Cursor the answer it expects, and that checkout records nothing until the launcher is back. `sigdek init` warns when git ignores any file it wrote, `sigdek status` says when `.sigdek/launch.sh` is missing, and in a repository set up by an older version, `sigdek status` asks you to run `sigdek init` again for these commands.
+
+### From hook to upload
 
 ```
 agent tool ──hook event──▶ launcher (.sigdek/launch.sh, or the plugin's)
