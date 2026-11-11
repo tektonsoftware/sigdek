@@ -116,9 +116,10 @@ persist() {
       sed -e 's/^[0-9][0-9-]* [0-9][0-9:]* //' -e 's/^([^)]*) - //' -e 's/^HTTP request sent, awaiting response\.\.\. //')
     [ -n "$WHY" ] || WHY="$GET: exit $code"
     # curl's and wget's exit status when the certificate couldn't be verified. Trying again won't
-    # help, and checking must stay on.
+    # help, and checking must stay on. (curl's 35 is any failed TLS handshake, such as a reset
+    # connection, so it's tried again like other failures.)
     case "$GET:$code" in
-      curl:60 | curl:35) die "the certificate of the server for $2 couldn't be verified ($WHY), so nothing was installed. Certificate checking must stay on: fix the system's certificates, then run this again." ;;
+      curl:60) die "the certificate of the server for $2 couldn't be verified ($WHY), so nothing was installed. Certificate checking must stay on: fix the system's certificates, then run this again." ;;
       wget:5) die "the certificate of the server for $2 couldn't be verified ($WHY), so nothing was installed. Certificate checking must stay on: use curl, or fix the system's certificates, then run this again." ;;
     esac
     [ "$n" -lt 3 ] || return "$code"

@@ -175,7 +175,8 @@ how to fix it, please visit the web page mentioned above.
 		{"wget only its advice", "wget", "To connect to x insecurely, use `--no-check-certificate'.\n", 4, 3, "failed (wget: exit 4), so nothing was installed."},
 		{"wget certificate", "wget", wgetCert, 5, 1, "couldn't be verified (ERROR: cannot verify 127.0.0.1's certificate, issued by 'CN=127.0.0.1':), so nothing was installed. Certificate checking must stay on: use curl, or"},
 		{"curl certificate", "curl", curlCert, 60, 1, "couldn't be verified (curl: (60) SSL certificate problem: self signed certificate), so nothing was installed. Certificate checking must stay on: fix the system's certificates"},
-		{"curl handshake", "curl", "curl: (35) LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to x:443\n", 35, 1, "couldn't be verified (curl: (35) LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to x:443)"},
+		// A failed TLS handshake (here a reset connection) isn't a certificate failure: tried again.
+		{"curl handshake", "curl", "curl: (35) LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to x:443\n", 35, 3, "failed (curl: (35) LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to x:443), so nothing was installed. Check the network connection"},
 		{"curl silent", "curl", "", 7, 3, "failed (curl: exit 7), so nothing was installed."},
 	}
 	eachShell(t, func(t *testing.T, sh string) {
