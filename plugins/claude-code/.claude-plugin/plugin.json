@@ -1,7 +1,7 @@
 {
   "name": "sigdek",
   "displayName": "SigDek",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Records what Claude Code's agents do in your repositories (who, which tool, what ran or was blocked) for your team's audit evidence. Never records prompt text, file contents or command output.",
   "author": { "name": "Tekton Software", "email": "hello@sigdek.com", "url": "https://sigdek.com" },
   "homepage": "https://sigdek.com",

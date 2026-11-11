@@ -2,28 +2,28 @@
 class Sigdek < Formula
   desc "Records what AI coding agents do on your machine, for your team's audit evidence"
   homepage "https://sigdek.com"
-  version "0.1.0"
+  version "0.1.1"
   license "Apache-2.0"
 
   on_macos do
     on_arm do
-      url "https://github.com/tektonsoftware/sigdek/releases/download/v0.1.0/sigdek_0.1.0_darwin_arm64"
-      sha256 "4615e3c5df25362c2ad7caf6ceb2d367606a4b09aac0d97eb956559573733762"
+      url "https://github.com/tektonsoftware/sigdek/releases/download/v0.1.1/sigdek_0.1.1_darwin_arm64"
+      sha256 "12fc26a997615b61b93902d1991b87c275f17108b426e2825d7b5c4b577c1003"
     end
     on_intel do
-      url "https://github.com/tektonsoftware/sigdek/releases/download/v0.1.0/sigdek_0.1.0_darwin_amd64"
-      sha256 "326940d12e4924d03be15b24b3ed74dd9e609d0a8d59dc54a79218ceb50505f4"
+      url "https://github.com/tektonsoftware/sigdek/releases/download/v0.1.1/sigdek_0.1.1_darwin_amd64"
+      sha256 "86a24ebba634fd22cb12e67337dee9c2884d63e548fff6f7206f544655f50dcb"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/tektonsoftware/sigdek/releases/download/v0.1.0/sigdek_0.1.0_linux_arm64"
-      sha256 "719058238421058eb09353000c5dc40acda7b10eb2eb05c16de1cc248c73476e"
+      url "https://github.com/tektonsoftware/sigdek/releases/download/v0.1.1/sigdek_0.1.1_linux_arm64"
+      sha256 "e5202bf9a8b4e14751d5847182364c3af7ea84232ebea4dfb26feb5b27103cb9"
     end
     on_intel do
-      url "https://github.com/tektonsoftware/sigdek/releases/download/v0.1.0/sigdek_0.1.0_linux_amd64"
-      sha256 "5e05bb665500c3f84a6fec026492b3683a716b45064880049641f813682bcad1"
+      url "https://github.com/tektonsoftware/sigdek/releases/download/v0.1.1/sigdek_0.1.1_linux_amd64"
+      sha256 "dde52238a6ee8cc92e157968901e703d4d5e4733c8d0b3399667bc707d50379d"
     end
   end
 
