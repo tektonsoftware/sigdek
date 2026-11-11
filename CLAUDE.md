@@ -52,7 +52,7 @@ A hook must never block or break the agent by accident.
 
 ## Releases
 
-- Pushing a tag like `v0.1.0` runs the release workflow. It builds six targets, publishes npm packages, pins the plugins and the Homebrew and Scoop manifests, and submits to winget.
+- Pushing a tag like `v0.1.0` runs the release workflow. It builds six targets, publishes npm packages, and, for the highest published version only, pins the plugins and the Homebrew and Scoop manifests and submits to winget.
 - **Never tag, publish to npm or change this repository's visibility without the maintainer's explicit go-ahead.** v0.1.0 waits until the hosted service is live in production, because the recorder's default addresses point there.
 
 ## Commits
