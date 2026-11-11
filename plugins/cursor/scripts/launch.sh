@@ -21,16 +21,24 @@ sigdek_eol=lf
 # for Cursor, the safe answer. Only a successful exec of the recorder skips it.
 case "$0" in */*) DIR=${0%/*} ;; *) DIR=. ;; esac
 
+# A hook says nothing on stderr. A command a person runs through the launcher, such as `login`
+# from the Claude Code plugin's /sigdek:connect, is told why the recorder didn't run.
+say() { [ "${1:-}" = hook ] || printf 'SigDek: %s\n' "$2" >&2; }
+ARG1=${1:-}
+
 # The plugins ship this same file. A plugin's copy steps aside in a project that has
 # SigDek's own hooks for the same tool (`sigdek init`), so nothing is recorded twice. Only the
 # project folder itself counts: Claude Code reads .claude/settings.json from the folder the
 # session started in, and Cursor reads .cursor/hooks.json from the workspace root, so an agent
-# started in a subdirectory of a SigDek repository runs no repository hooks.
+# started in a subdirectory of a SigDek repository runs no repository hooks. Only hook events
+# step aside: a command a person runs through the plugin, such as `login`, always runs.
 case "$DIR" in
   .sigdek | */.sigdek) ;;
   *)
-    if [ "${2:-}" = cursor ]; then P=${CURSOR_PROJECT_DIR:-$PWD} F=.cursor/hooks.json; else P=${CLAUDE_PROJECT_DIR:-$PWD} F=.claude/settings.json; fi
-    if [ -f "$P/.sigdek/launch.sh" ] && [ -f "$P/$F" ] && grep -q 'sigdek/launch\.' "$P/$F" 2>/dev/null; then exit 0; fi
+    if [ "${1:-}" = hook ]; then
+      if [ "${2:-}" = cursor ]; then P=${CURSOR_PROJECT_DIR:-$PWD} F=.cursor/hooks.json; else P=${CLAUDE_PROJECT_DIR:-$PWD} F=.claude/settings.json; fi
+      if [ -f "$P/.sigdek/launch.sh" ] && [ -f "$P/$F" ] && grep -q 'sigdek/launch\.' "$P/$F" 2>/dev/null; then exit 0; fi
+    fi
     ;;
 esac
 
@@ -78,6 +86,7 @@ WANT=$(val "${OS}_${ARCH}")
 if [ -z "$WANT" ]; then
   # `sigdek init --offline` pins only the platform it ran on. Say so in the error log, once a
   # day, so `sigdek status` on this machine shows why nothing is recorded.
+  say "$ARG1" "recorder.lock pins SigDek $VERSION with no build for $OS/$ARCH, so the recorder can't run here."
   if mkdir -p "$CACHE/$VERSION" 2>/dev/null && [ -z "$(find "$CACHE/$VERSION/.no-build" -mmin -1440 2>/dev/null)" ]; then
     : >"$CACHE/$VERSION/.no-build" 2>/dev/null
     (
@@ -94,21 +103,24 @@ mkdir -p "$CACHE/$VERSION" 2>/dev/null || exit 0
 
 # While a download carries on in the background (see later, below), other events leave it be.
 MARK="$CACHE/$VERSION/.downloading"
-[ -n "$(find "$MARK" -mmin -7 2>/dev/null)" ] && exit 0
+[ -n "$(find "$MARK" -mmin -7 2>/dev/null)" ] && { say "$ARG1" "the recorder (SigDek $VERSION) is still downloading in the background. Try again in a minute."; exit 0; }
 
 # After a failed download, wait 1, 2, 4 ... up to 60 minutes before trying again, so a machine
 # that can't reach the release doesn't spend every event on the network. A new checksum in
 # recorder.lock retries at once.
 STAMP="$CACHE/$VERSION/.download-failed"
+backoff() { W=1 i=1; while [ "$i" -lt "$1" ] && [ "$W" -lt 60 ]; do W=$((W * 2)) i=$((i + 1)); done; [ "$W" -gt 60 ] && W=60; echo "$W"; }
+minutes() { if [ "$1" = 1 ]; then echo "1 minute"; else echo "$1 minutes"; fi; }
 FAILS=0
 if [ -f "$STAMP" ]; then
   read -r FAILS STAMPED <"$STAMP" 2>/dev/null
   case "$FAILS" in '' | *[!0-9]*) FAILS=1 ;; esac
   if [ "$STAMPED" = "$WANT" ]; then
-    WAIT=1 i=1
-    while [ "$i" -lt "$FAILS" ] && [ "$WAIT" -lt 60 ]; do WAIT=$((WAIT * 2)) i=$((i + 1)); done
-    [ "$WAIT" -gt 60 ] && WAIT=60
-    [ -n "$(find "$STAMP" -mmin "-$WAIT" 2>/dev/null)" ] && exit 0
+    WAIT=$(backoff "$FAILS")
+    if [ -n "$(find "$STAMP" -mmin "-$WAIT" 2>/dev/null)" ]; then
+      say "$ARG1" "the recorder (SigDek $VERSION) couldn't be downloaded the last time the launcher tried. It tries again $(minutes "$WAIT") after that try."
+      exit 0
+    fi
   else
     FAILS=0
   fi
@@ -117,6 +129,7 @@ TMP="$BIN.$$.download"
 failed() {
   rm -f "$TMP"
   echo "$((FAILS + 1)) $WANT" >"$STAMP" 2>/dev/null
+  say "$ARG1" "couldn't download the recorder (SigDek $VERSION) from $BASE ($1). The launcher tries again in $(minutes "$(backoff $((FAILS + 1)))")."
   exit 0
 }
 sha() { (sha256sum "$1" 2>/dev/null || shasum -a 256 "$1" 2>/dev/null || openssl dgst -sha256 -r "$1" 2>/dev/null) | awk '{print $1}' | head -n 1; }
@@ -141,6 +154,7 @@ later() {
     fi
     rm -f "$MARK"
   ) </dev/null >/dev/null 2>&1 &
+  say "$ARG1" "the recorder (SigDek $VERSION) is downloading in the background over a slow link. Try again in a minute."
   exit 0
 }
 
@@ -150,13 +164,13 @@ NAME="sigdek_${VERSION}_${OS}_${ARCH}${EXT}"
 SECS=8
 [ "$OS" = windows ] && SECS=6
 if command -v curl >/dev/null 2>&1; then
-  curl -fsSL --connect-timeout 2 --max-time "$SECS" -o "$TMP" "$BASE/$NAME" 2>/dev/null || { [ $? = 28 ] && later; failed; }
+  curl -fsSL --connect-timeout 2 --max-time "$SECS" -o "$TMP" "$BASE/$NAME" 2>/dev/null || { [ $? = 28 ] && later; failed "it couldn't be reached"; }
 elif command -v wget >/dev/null 2>&1; then
-  wget -q -T 8 -t 1 -O "$TMP" "$BASE/$NAME" 2>/dev/null || failed
+  wget -q -T 8 -t 1 -O "$TMP" "$BASE/$NAME" 2>/dev/null || failed "it couldn't be reached"
 else
-  failed
+  failed "this machine has neither curl nor wget"
 fi
-[ "$(sha "$TMP")" = "$WANT" ] || failed
-chmod +x "$TMP" 2>/dev/null && mv -f "$TMP" "$BIN" 2>/dev/null || failed
+[ "$(sha "$TMP")" = "$WANT" ] || failed "the file didn't match its pinned SHA-256"
+chmod +x "$TMP" 2>/dev/null && mv -f "$TMP" "$BIN" 2>/dev/null || failed "it couldn't be saved in $CACHE"
 rm -f "$STAMP"
 exec "$BIN" "$@"

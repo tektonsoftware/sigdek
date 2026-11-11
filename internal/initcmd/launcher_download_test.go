@@ -28,9 +28,17 @@ import (
 func TestMain(m *testing.M) {
 	// On Windows the launchers need a real .exe as the recorder; this test binary is that recorder
 	// (the same as fakeRecorder's script) when the launcher runs it with this variable set.
-	if os.Getenv("SIGDEK_TEST_RECORDER") == "1" {
+	switch os.Getenv("SIGDEK_TEST_RECORDER") {
+	case "1":
 		fmt.Println("recorder ran: " + strings.Join(os.Args[1:], " "))
 		io.Copy(os.Stdout, os.Stdin)
+		os.Exit(0)
+	case "answer":
+		// A recorder that keeps its input in SIGDEK_TEST_STDIN and answers with a denial naming
+		// its arguments, as a Block rule would.
+		in, _ := io.ReadAll(os.Stdin)
+		os.WriteFile(os.Getenv("SIGDEK_TEST_STDIN"), in, 0o644)
+		fmt.Printf("{\"permission\":\"deny\",\"user_message\":\"recorder ran: %s\"}\n", strings.Join(os.Args[1:], " "))
 		os.Exit(0)
 	}
 	os.Exit(m.Run())

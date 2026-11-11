@@ -383,13 +383,14 @@ func TestCLICommands(t *testing.T) {
 	if out := runCLI("verify"); !strings.Contains(out, "All 1 records") {
 		t.Fatalf("verify: %s", out)
 	}
-	if out := runCLI("status"); !strings.Contains(out, "Signed in   no") || !strings.Contains(out, "1 on this machine") {
+	if out := runCLI("status"); !strings.Contains(out, "[ ] This machine isn't connected to a team") || !strings.Contains(out, "Records     1 on this machine") {
 		t.Fatalf("status: %s", out)
 	}
 	if out := runCLI("init", "--offline"); !strings.Contains(out, ".claude/settings.json") || !strings.Contains(out, ".sigdek/launch.sh") {
 		t.Fatalf("init: %s", out)
 	}
-	if out := runCLI("status"); !strings.Contains(out, "Claude Code hooks: yes; Cursor hooks: yes") {
+	// A development build pins "dev", which no launcher can download (QA1-SETUP-1).
+	if out := runCLI("status"); !strings.Contains(out, "Claude Code has hooks in this project") || !strings.Contains(out, "Cursor has hooks in this project") || !strings.Contains(out, "development build") {
 		t.Fatalf("status after init: %s", out)
 	}
 }
@@ -466,6 +467,12 @@ func TestStatusNamesAMissingPlatformBuild(t *testing.T) {
 	if runtime.GOOS == "windows" && runtime.GOARCH == "arm64" {
 		other = "linux_amd64"
 	}
+	initCmd := exec.Command(binary, "init", "--offline")
+	initCmd.Env = append(os.Environ(), "SIGDEK_HOME="+home)
+	initCmd.Dir = dir
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		t.Fatalf("init: %v %s", err, out)
+	}
 	os.WriteFile(filepath.Join(dir, ".sigdek", "recorder.lock"), []byte("version=0.9.9\nurl=https://example.invalid\n"+other+"="+strings.Repeat("a", 64)+"\n"), 0o644)
 	cmd := exec.Command(binary, "status")
 	cmd.Env = append(os.Environ(), "SIGDEK_HOME="+home)
@@ -496,7 +503,7 @@ func TestCLIPolish(t *testing.T) {
 		return out.String(), errb.String(), code
 	}
 	out, _, _ := cli(outside, "status")
-	if strings.Contains(out, "This repo") || !strings.Contains(out, "not set up yet") {
+	if !strings.Contains(out, "[ ] Nothing records Claude Code or Cursor in this folder yet") || !strings.Contains(out, "not set up yet") {
 		t.Errorf("status outside a repository:\n%s", out)
 	}
 	if _, err := os.Stat(config.DevicePath(home)); err == nil {
@@ -517,7 +524,7 @@ func TestCLIPolish(t *testing.T) {
 	os.MkdirAll(config.StateDir(home), 0o700)
 	os.WriteFile(filepath.Join(config.StateDir(home), "upload-health.json"), []byte(`{"last_ok":"2026-01-15T21:00:00Z","last_try":"2026-01-15T21:00:00Z","refused":2}`), 0o600)
 	out, _, _ = cli(outside, "status")
-	if !strings.Contains(out, "Errors      none") || !strings.Contains(out, "Uploads     working") || !strings.Contains(out, "refused 2 as malformed") {
+	if !strings.Contains(out, "Errors      none") || !strings.Contains(out, "[x] Uploads work: the last one finished") || !strings.Contains(out, "refused 2 as malformed") {
 		t.Errorf("after a good upload:\n%s", out)
 	}
 
@@ -526,7 +533,7 @@ func TestCLIPolish(t *testing.T) {
 		{ID: "ok", Effect: rules.Deny, Kinds: []string{"shell"}, Command: "rm -rf*"},
 		{ID: "bad-re", Effect: rules.Deny, Kinds: []string{"shell"}, Command: "re:rm(?!x)"},
 	}})
-	if out, _, _ := cli(outside, "status"); !strings.Contains(out, "0 flag, 1 deny") || !strings.Contains(out, "Not working: rule bad-re") {
+	if out, _, _ := cli(outside, "status"); !strings.Contains(out, "0 flag, 1 block") || !strings.Contains(out, "Not working: rule bad-re") {
 		t.Errorf("broken rule:\n%s", out)
 	}
 
@@ -555,25 +562,25 @@ func TestStatusNamesThePlugin(t *testing.T) {
 		out, _ := cmd.CombinedOutput()
 		return string(out)
 	}
-	if out := status(); strings.Contains(out, "Plugin ") {
+	if out := status(); strings.Contains(out, "plugin (turned") || strings.Contains(out, "plugin is turned") {
 		t.Fatalf("no plugin installed, but status names one:\n%s", out)
 	}
 	os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(`{"enabledPlugins":{"other@market":true,"sigdek@sigdek":true}}`), 0o644)
-	if out := status(); !strings.Contains(out, "SigDek's Claude Code plugin is on ("+filepath.Join(claudeDir, "settings.json")) && !strings.Contains(out, "SigDek's Claude Code plugin is on (~") {
+	if out := status(); !strings.Contains(out, "[x] Claude Code records here, through SigDek's plugin (turned on in "+filepath.Join(claudeDir, "settings.json")) && !strings.Contains(out, "through SigDek's plugin (turned on in ~") {
 		t.Fatalf("user-level plugin not named:\n%s", out)
 	}
 	os.MkdirAll(filepath.Join(dir, ".claude"), 0o755)
 	os.WriteFile(filepath.Join(dir, ".claude", "settings.local.json"), []byte(`{"enabledPlugins":{"sigdek@sigdek":false}}`), 0o644)
-	if out := status(); !strings.Contains(out, "plugin is turned off here (this repo's .claude/settings.local.json)") {
+	if out := status(); !strings.Contains(out, "[ ] SigDek's Claude Code plugin is turned off here (this repo's .claude/settings.local.json)") {
 		t.Fatalf("repository's off switch not named:\n%s", out)
 	}
 	os.WriteFile(filepath.Join(dir, ".claude", "settings.local.json"), []byte(`{"enabledPlugins":{"sigdek@claude-plugins-official":true}}`), 0o644)
-	if out := status(); !strings.Contains(out, "plugin is on (this repo's .claude/settings.local.json)") {
+	if out := status(); !strings.Contains(out, "through SigDek's plugin (turned on in this repo's .claude/settings.local.json)") {
 		t.Fatalf("plugin from another marketplace not named:\n%s", out)
 	}
 	os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(`{not json`), 0o644)
 	os.Remove(filepath.Join(dir, ".claude", "settings.local.json"))
-	if out := status(); strings.Contains(out, "Plugin ") || !strings.Contains(out, "Errors      none") {
+	if out := status(); strings.Contains(out, "plugin (turned") || strings.Contains(out, "plugin is turned") || !strings.Contains(out, "Errors      none") {
 		t.Fatalf("unreadable settings should be ignored quietly:\n%s", out)
 	}
 }
@@ -606,7 +613,12 @@ func TestStatusNamesOldHookCommands(t *testing.T) {
 	// QA3-REC-6: the Cursor commands before they answered for a launcher that prints nothing.
 	cur := filepath.Join(dir, ".cursor", "hooks.json")
 	b, _ := os.ReadFile(cur)
-	os.WriteFile(cur, []byte(strings.ReplaceAll(string(b), " | grep '^{' || echo", " || echo")), 0o644)
+	older := strings.NewReplacer(`.sigdek/launch.sh hook cursor stop | grep \"^{\" || echo`, `.sigdek/launch.sh hook cursor stop || echo`,
+		`.sigdek/launch.sh hook cursor stop | grep '^{' || echo`, `.sigdek/launch.sh hook cursor stop || echo`).Replace(string(b))
+	if older == string(b) {
+		t.Fatalf("no Cursor stop command to make old:\n%s", b)
+	}
+	os.WriteFile(cur, []byte(older), 0o644)
 	if out := status(); !strings.Contains(out, "written by an older sigdek init") {
 		t.Fatalf("old Cursor commands not named:\n%s", out)
 	}
@@ -649,7 +661,7 @@ func TestLogoutAndStatusAfterSigningInAgain(t *testing.T) {
 	}
 	os.WriteFile(config.ErrorLog(home), []byte(`{"at":"`+stamp(at)+`","error":"upload: the server accepted 3 records, but its answer couldn't be read (EOF)"}`+"\n"), 0o600)
 	os.WriteFile(health, []byte(`{"last_try":"`+at.Add(-300*time.Millisecond).Format(time.RFC3339Nano)+`","last_ok":"`+at.Add(time.Second).Format(time.RFC3339Nano)+`"}`), 0o600)
-	if out := cli("status"); !strings.Contains(out, "answer couldn't be read") || !strings.Contains(out, "Uploads     working") {
+	if out := cli("status"); !strings.Contains(out, "answer couldn't be read") || !strings.Contains(out, "[x] Uploads work") {
 		t.Errorf("a warning from the last good upload is hidden:\n%s", out)
 	}
 }

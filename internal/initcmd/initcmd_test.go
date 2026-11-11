@@ -3,6 +3,7 @@ package initcmd
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,9 +13,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/tektonsoftware/sigdek/internal/adapter"
 )
@@ -87,7 +90,7 @@ func TestInitMergesAndRemovesCleanly(t *testing.T) {
 		Hooks   map[string][]struct{ Command string } `json:"hooks"`
 	}
 	json.Unmarshal(cur, &cc)
-	if cc.Version != 1 || cc.Hooks["preToolUse"][0].Command != `sh .sigdek/launch.sh hook cursor preToolUse | grep '^{' || echo '{"permission":"allow"}'` {
+	if cc.Version != 1 || cc.Hooks["preToolUse"][0].Command != cursorCommand("preToolUse", ChooseCursorForm(t.TempDir(), runtime.GOOS, "")) {
 		t.Fatalf("cursor hooks: %s", cur)
 	}
 
@@ -394,10 +397,107 @@ func TestPluginLauncherStepsAsideForRepoHooks(t *testing.T) {
 				t.Errorf("%s %v: started in a subdirectory, the plugin must record: %q", sh, args, out)
 			}
 		}
+		// D11: a command a person runs through the plugin (/sigdek:connect runs `login`) isn't a
+		// hook event, so the plugin runs it even in a project with SigDek's own hooks.
+		if out, _ := plugin.run("", env, "login", "--no-browser"); !strings.Contains(out, "recorder ran: login --no-browser") {
+			t.Errorf("%s: login through the plugin stepped aside: %q", sh, out)
+		}
 		// The repository's own launcher runs as usual.
 		repo := &launcher{t: t, shell: sh, dir: filepath.Join(project, ".sigdek"), env: plugin.env}
 		if out, _ := repo.run("{}", env, "hook", "claude-code"); !strings.Contains(out, "recorder ran") {
 			t.Errorf("%s: the repository's launcher must not step aside: %q", sh, out)
+		}
+	}
+}
+
+// D11: /sigdek:connect runs `sigdek login` through the plugin's own launcher and the recorder
+// it downloaded for its hooks. The command the skill tells Claude to run is the one its
+// allowed-tools rule lets run without asking, and it signs in even in a project that has
+// SigDek's own hooks, where the plugin's hooks step aside.
+func TestConnectSkillRunsLoginThroughThePluginLauncher(t *testing.T) {
+	b, err := os.ReadFile("../../plugins/claude-code/skills/connect/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill := strings.ReplaceAll(string(b), "\r\n", "\n")
+	front, body, ok := strings.Cut(strings.TrimPrefix(skill, "---\n"), "\n---\n")
+	if !ok || !strings.HasPrefix(skill, "---\n") {
+		t.Fatal("SKILL.md has no frontmatter")
+	}
+	const command = `CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" sh "${CLAUDE_PLUGIN_ROOT}/scripts/launch.sh" login`
+	// QA1-SETUP-6: Read only in Claude Code's temporary folder, where background output goes.
+	for _, want := range []string{"name: connect\n", "disable-model-invocation: true\n", "allowed-tools: Bash(" + command + ") Read(//tmp/claude-*/**) Read(//private/tmp/claude-*/**)\n"} {
+		if !strings.Contains(front+"\n", want) {
+			t.Errorf("frontmatter lacks %q:\n%s", want, front)
+		}
+	}
+	if !strings.Contains(body, "\n   "+command+"\n") || !strings.Contains(body, "run_in_background: true") {
+		t.Errorf("the skill doesn't give the command to run in the background:\n%s", body)
+	}
+	fake := fakeRecorder(t)
+	for _, sh := range shells(t) {
+		project := t.TempDir()
+		os.MkdirAll(filepath.Join(project, ".git"), 0o755)
+		if _, err := Run(Options{Root: project, Version: "dev", Tools: []string{"claude-code,cursor"}}); err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(t.TempDir(), "plugin")
+		os.MkdirAll(filepath.Join(root, "scripts"), 0o755)
+		os.WriteFile(filepath.Join(root, "scripts", "launch.sh"), launchSh, 0o644)
+		data := filepath.Join(t.TempDir(), "plugin data")
+		run := strings.NewReplacer("${CLAUDE_PLUGIN_DATA}", data, "${CLAUDE_PLUGIN_ROOT}", root).Replace(command)
+		out, code := runAs(sh, project, run, "", []string{"SIGDEK_BIN=" + fake, "CLAUDE_PROJECT_DIR=" + project})
+		if code != 0 || !strings.HasPrefix(out, "recorder ran: login\n") {
+			t.Errorf("%s: exit %d, %q", sh, code, out)
+		}
+		// Without SIGDEK_BIN, the launcher looks for the recorder in the plugin's data folder.
+		lock := "version=7.2.0\nurl=https://example.invalid\n" + Platform() + "=" + strings.Repeat("a", 64) + "\n"
+		os.WriteFile(filepath.Join(root, "scripts", "recorder.lock"), []byte(lock), 0o644)
+		rec, _ := os.ReadFile(fake)
+		os.MkdirAll(filepath.Join(data, "7.2.0"), 0o755)
+		os.WriteFile(filepath.Join(data, "7.2.0", "sigdek"), rec, 0o755)
+		if out, _ := runAs(sh, project, run, "", []string{"CLAUDE_PROJECT_DIR=" + project, "SIGDEK_HOME=" + t.TempDir()}); !strings.HasPrefix(out, "recorder ran: login\n") {
+			t.Errorf("%s: the plugin's cached recorder didn't run: %q", sh, out)
+		}
+	}
+}
+
+// QA1-SETUP-15: a command a person runs through the launcher (the plugin's /sigdek:connect runs
+// `login`) is told why the recorder didn't run, and when the launcher tries again; a hook in the
+// same state prints nothing at all.
+func TestLauncherTellsAPersonWhyTheRecorderDidntRun(t *testing.T) {
+	for _, sh := range shells(t) {
+		l := newLauncher(t, sh, filepath.Join(t.TempDir(), "plugin", "scripts"), launchSh)
+		l.lock("version=7.3.0\nurl=http://127.0.0.1:9\n" + Platform() + "=" + strings.Repeat("a", 64) + "\n")
+		cache := t.TempDir()
+		run := func(args ...string) (string, string, int) {
+			cmd := exec.Command(sh, append([]string{filepath.Join(l.dir, "launch.sh")}, args...)...)
+			cmd.Env = append(append([]string{}, l.env...), "SIGDEK_CACHE="+cache)
+			cmd.Stdin = strings.NewReader("{}")
+			var out, errb strings.Builder
+			cmd.Stdout, cmd.Stderr = &out, &errb
+			err := cmd.Run()
+			code := 0
+			if ee, ok := err.(*exec.ExitError); ok {
+				code = ee.ExitCode()
+			}
+			return out.String(), errb.String(), code
+		}
+		if out, errs, code := run("login"); code != 0 || out != "" || !strings.Contains(errs, "SigDek: couldn't download the recorder (SigDek 7.3.0) from http://127.0.0.1:9") || !strings.Contains(errs, "tries again in 1 minute.") {
+			t.Errorf("%s, failed download: exit %d, stdout %q, stderr %q", sh, code, out, errs)
+		}
+		if _, errs, _ := run("login"); !strings.Contains(errs, "couldn't be downloaded the last time the launcher tried. It tries again 1 minute after that try.") {
+			t.Errorf("%s, during the back-off: stderr %q", sh, errs)
+		}
+		for _, hook := range [][]string{{"hook", "claude-code"}, {"hook", "cursor", "stop"}} {
+			if out, errs, code := run(hook...); code != 0 || errs != "" || (out != "" && out != "{}\n") {
+				t.Errorf("%s, %v: exit %d, stdout %q, stderr %q; a hook says nothing", sh, hook, code, out, errs)
+			}
+		}
+		os.MkdirAll(filepath.Join(cache, "7.3.0"), 0o755)
+		os.WriteFile(filepath.Join(cache, "7.3.0", ".downloading"), nil, 0o644)
+		if _, errs, _ := run("login"); !strings.Contains(errs, "is still downloading in the background. Try again in a minute.") {
+			t.Errorf("%s, downloading: stderr %q", sh, errs)
 		}
 	}
 }
@@ -828,6 +928,185 @@ func TestCursorCommandPassesOnTheAnswer(t *testing.T) {
 	}
 }
 
+// psShells are the PowerShells to run hook commands with, and the environment to give them: on
+// Windows, Windows PowerShell 5.1 and PowerShell 7 if installed; elsewhere PowerShell 7, with a
+// `powershell` command that runs pwsh when there is none (GitHub's macOS runners have one), so
+// launch.ps1 runs as it would on Windows.
+func psShells(t *testing.T) ([]string, []string) {
+	t.Helper()
+	var shells []string
+	for _, ps := range []string{"powershell", "pwsh"} {
+		if _, err := exec.LookPath(ps); err == nil && (ps == "pwsh" || runtime.GOOS == "windows") {
+			shells = append(shells, ps)
+		}
+	}
+	if runtime.GOOS == "windows" && (len(shells) == 0 || shells[0] != "powershell") {
+		t.Fatal("Windows PowerShell isn't installed; this test must run under it on Windows")
+	}
+	if len(shells) == 0 {
+		t.Skip("no PowerShell installed")
+	}
+	var env []string
+	if _, err := exec.LookPath("powershell"); err != nil {
+		shim := t.TempDir()
+		os.WriteFile(filepath.Join(shim, "powershell"), []byte("#!/bin/sh\nexec pwsh \"$@\"\n"), 0o755)
+		env = append(env, "PATH="+shim+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
+	return shells, env
+}
+
+// encoded runs a PowerShell script given as -EncodedCommand, which needs no quoting.
+func encoded(t *testing.T, ps, dir, script, stdin string, env []string) (string, int) {
+	t.Helper()
+	u := utf16.Encode([]rune(script))
+	b := make([]byte, 2*len(u))
+	for i, c := range u {
+		b[2*i], b[2*i+1] = byte(c), byte(c>>8)
+	}
+	cmd := exec.Command(ps, "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(b))
+	cmd.Dir = dir
+	cmd.Env = env
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.Output()
+	code := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	return strings.ReplaceAll(string(out), "\r\n", "\n"), code
+}
+
+// cursorWrapped runs a hook command the way Cursor reportedly does on Windows: inside its own
+// PowerShell wrapper, which pipes the input in, `Get-Content payload.json -Raw | & { $input |
+// <command> }`.
+func cursorWrapped(t *testing.T, ps, root, command, stdin string, env []string) (string, int) {
+	t.Helper()
+	payload := filepath.Join(t.TempDir(), "payload.json")
+	os.WriteFile(payload, []byte(stdin), 0o644)
+	script := "$OutputEncoding = [System.Text.Encoding]::UTF8; Get-Content -LiteralPath '" + payload + "' -Raw | & { $input | " + command + " }"
+	return encoded(t, ps, root, script, "", env)
+}
+
+// D10: the sh-and-PowerShell form under PowerShell runs launch.ps1 with Cursor's input and passes
+// on its answer, under Windows PowerShell 5.1 and PowerShell 7, whether the input is piped in by
+// Cursor's wrapper or arrives on stdin (QA1-SETUP-2), and answers for itself when launch.ps1 is
+// missing or broken. The --powershell form passes on the answer too. Both run launch.ps1 under
+// -ExecutionPolicy RemoteSigned.
+func TestCursorCommandsUnderPowerShell(t *testing.T) {
+	shells, shim := psShells(t)
+	exe, _ := os.Executable()
+	for _, ps := range shells {
+		for _, form := range []string{CursorBoth, CursorPowerShell} {
+			root := t.TempDir()
+			if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}, CursorForm: form}); err != nil {
+				t.Fatal(err)
+			}
+			_, cursor := hookCommands(t, root)
+			home := t.TempDir()
+			// Two events with different safe answers; each run starts two PowerShells, which is slow
+			// on Windows and loads the runner while other packages' timing tests run.
+			for _, ev := range []string{"preToolUse", "beforeSubmitPrompt"} {
+				in := `{"hook_event_name":"` + ev + `","prompt":"caf\u00e9"}`
+				want := `{"permission":"deny","user_message":"recorder ran: hook cursor ` + ev + `"}` + "\n"
+				ways := map[string]func(env []string) (string, int){
+					"piped in by Cursor's wrapper": func(env []string) (string, int) { return cursorWrapped(t, ps, root, cursor[ev], in, env) },
+				}
+				if form == CursorBoth {
+					// No wrapper: the input is the process's stdin, which launch.ps1 inherits.
+					ways["on stdin"] = func(env []string) (string, int) { return encoded(t, ps, root, cursor[ev], in, env) }
+				}
+				for way, run := range ways {
+					got := filepath.Join(t.TempDir(), "stdin")
+					env := cleanEnv(append(shim, "SIGDEK_HOME="+home, "SIGDEK_BIN="+exe, "SIGDEK_TEST_RECORDER=answer", "SIGDEK_TEST_STDIN="+got)...)
+					out, code := run(env)
+					if code != 0 || out != want {
+						t.Errorf("%s, %s form, %s, input %s: exit %d, stdout %q, want %q", ps, form, ev, way, code, out, want)
+					}
+					if b, _ := os.ReadFile(got); !strings.Contains(string(b), `"hook_event_name":"`+ev+`"`) {
+						t.Errorf("%s, %s form, %s, input %s: the recorder got %q", ps, form, ev, way, b)
+					}
+				}
+			}
+		}
+
+		// The sh-and-PowerShell form always answers, whatever happened to launch.ps1.
+		damage := map[string]func(dir string){
+			"no .sigdek folder": func(dir string) { os.RemoveAll(dir) },
+			"no launch.ps1":     func(dir string) { os.Remove(filepath.Join(dir, "launch.ps1")) },
+			"empty launch.ps1":  func(dir string) { os.WriteFile(filepath.Join(dir, "launch.ps1"), nil, 0o644) },
+			"launch.ps1 is a folder": func(dir string) {
+				os.Remove(filepath.Join(dir, "launch.ps1"))
+				os.Mkdir(filepath.Join(dir, "launch.ps1"), 0o755)
+			},
+			"conflict in launch.ps1": func(dir string) {
+				os.WriteFile(filepath.Join(dir, "launch.ps1"), []byte("<<<<<<< HEAD\n$x = 1\n=======\n$x = 2\n>>>>>>> b\n"), 0o644)
+			},
+			"launch.ps1 prints other text and exits 2": func(dir string) {
+				os.WriteFile(filepath.Join(dir, "launch.ps1"), []byte("Write-Output 'version https://git-lfs.github.com/spec/v1'\nexit 2\n"), 0o644)
+			},
+		}
+		home := t.TempDir()
+		for name, broke := range damage {
+			root := t.TempDir()
+			if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}, CursorForm: CursorBoth}); err != nil {
+				t.Fatal(err)
+			}
+			broke(filepath.Join(root, ".sigdek"))
+			_, cursor := hookCommands(t, root)
+			events := []string{"preToolUse"}
+			if name == "no .sigdek folder" {
+				events = append(events, "beforeSubmitPrompt", "stop") // each event's own safe answer
+			}
+			for _, ev := range events {
+				out, code := cursorWrapped(t, ps, root, cursor[ev], `{"hook_event_name":"`+ev+`"}`, cleanEnv(append(shim, "SIGDEK_HOME="+home)...))
+				if code != 0 || out != cursorSafe(ev)+"\n" {
+					t.Errorf("%s, %s, %s: exit %d, stdout %q", ps, name, ev, code, out)
+				}
+			}
+		}
+	}
+}
+
+// D10: on Windows, the execution policy the Cursor commands set, RemoteSigned, is the one in
+// force for launch.ps1: a launch.ps1 marked as downloaded from the internet is refused (and
+// Cursor still gets its answer), and an unmarked one, as a clone gives, runs.
+func TestCursorCommandsExecutionPolicyOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("execution policies are Windows PowerShell's")
+	}
+	if _, err := exec.LookPath("powershell"); err != nil {
+		t.Fatal("Windows PowerShell isn't installed")
+	}
+	exe, _ := os.Executable()
+	root := t.TempDir()
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}, CursorForm: CursorBoth}); err != nil {
+		t.Fatal(err)
+	}
+	_, cursor := hookCommands(t, root)
+	run := func() (string, string, int) {
+		got := filepath.Join(t.TempDir(), "stdin")
+		out, code := cursorWrapped(t, "powershell", root, cursor["preToolUse"], `{"hook_event_name":"preToolUse"}`,
+			cleanEnv("SIGDEK_HOME="+t.TempDir(), "SIGDEK_BIN="+exe, "SIGDEK_TEST_RECORDER=answer", "SIGDEK_TEST_STDIN="+got))
+		b, _ := os.ReadFile(got)
+		return out, string(b), code
+	}
+	if out, in, code := run(); code != 0 || !strings.Contains(out, `"permission":"deny"`) || in == "" {
+		t.Fatalf("unmarked launch.ps1 under RemoteSigned: exit %d, stdout %q, recorder input %q", code, out, in)
+	}
+	policy, _ := encoded(t, "powershell", root, "powershell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command Get-ExecutionPolicy", "", cleanEnv())
+	if strings.TrimSpace(policy) != "RemoteSigned" {
+		t.Errorf("the effective policy is %q, not RemoteSigned", policy)
+	}
+	// Mark of the Web: downloaded from the internet (zone 3).
+	if err := os.WriteFile(filepath.Join(root, ".sigdek", "launch.ps1")+":Zone.Identifier", []byte("[ZoneTransfer]\r\nZoneId=3\r\n"), 0o644); err != nil {
+		t.Fatalf("can't mark the file as downloaded (%v)", err)
+	}
+	if out, in, code := run(); code != 0 || out != cursorSafe("preToolUse")+"\n" || in != "" {
+		t.Errorf("marked launch.ps1 under RemoteSigned: exit %d, stdout %q, recorder input %q; want it refused, with the safe answer", code, out, in)
+	}
+}
+
 // QA3-REC-6: status asks for sigdek init again when a repository has hook commands an older
 // version wrote, and not for the current ones, --powershell included.
 func TestOutdatedHookCommands(t *testing.T) {
@@ -835,12 +1114,12 @@ func TestOutdatedHookCommands(t *testing.T) {
 	if got := Outdated(root); len(got) != 0 {
 		t.Fatalf("no hook files: %v", got)
 	}
-	for _, ps := range []bool{false, true} {
-		if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}, PowerShell: ps}); err != nil {
+	for _, form := range []string{"", CursorSh, CursorBoth, CursorPowerShell} {
+		if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}, CursorForm: form}); err != nil {
 			t.Fatal(err)
 		}
 		if got := Outdated(root); len(got) != 0 {
-			t.Fatalf("current commands (powershell %v) called outdated: %v", ps, got)
+			t.Fatalf("current commands (form %q) called outdated: %v", form, got)
 		}
 	}
 	write := func(path, body string) {
@@ -855,6 +1134,19 @@ func TestOutdatedHookCommands(t *testing.T) {
 		if got := Outdated(root); len(got) != 1 || got[0] != "cursor" {
 			t.Errorf("%s: %v", old, got)
 		}
+		if got := CursorForm(root); got != CursorOlder {
+			t.Errorf("CursorForm with an older form: %q", got)
+		}
+	}
+	// What 0.1.0 wrote, by default and with --powershell (with Bypass), is current.
+	for v010, form := range map[string]string{
+		`sh .sigdek/launch.sh hook cursor preToolUse | grep '^{' || echo '{\"permission\":\"allow\"}'`:  CursorSh,
+		`powershell -NoProfile -ExecutionPolicy Bypass -File .sigdek/launch.ps1 hook cursor preToolUse`: CursorPowerShell,
+	} {
+		write(".cursor/hooks.json", `{"version":1,"hooks":{"stop":[{"command":"./my-own-hook.sh"}],"preToolUse":[{"command":"`+v010+`"}]}}`)
+		if got := Outdated(root); len(got) != 0 || CursorForm(root) != form {
+			t.Errorf("0.1.0 form %q: outdated %v, form %q", form, got, CursorForm(root))
+		}
 	}
 	write(".cursor/hooks.json", `{"version":1,"hooks":{"stop":[{"command":"./my-own-hook.sh"}]}}`)
 	write(".claude/settings.json", `{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"sh \"$CLAUDE_PROJECT_DIR/.sigdek/launch.sh\" hook claude-code"}]}]}}`)
@@ -863,17 +1155,173 @@ func TestOutdatedHookCommands(t *testing.T) {
 	}
 }
 
-func TestWindowsNote(t *testing.T) {
-	if WindowsNote("windows", []string{"claude-code", "cursor"}, false) == "" {
-		t.Error("no note for Cursor hooks written on Windows without --powershell")
-	}
-	for _, c := range []struct {
-		goos  string
-		tools []string
-		ps    bool
-	}{{"windows", []string{"cursor"}, true}, {"windows", []string{"claude-code"}, false}, {"darwin", []string{"cursor"}, false}} {
-		if WindowsNote(c.goos, c.tools, c.ps) != "" {
-			t.Errorf("%+v: unexpected note", c)
+// Lead's decision 1: init writes the form a flag names; without one, CursorBoth where the
+// project's Cursor hooks already run under PowerShell, CursorBoth on Windows, and
+// DefaultCursorForm elsewhere. Whichever DefaultCursorForm is, these hold.
+func TestChooseCursorForm(t *testing.T) {
+	root := t.TempDir()
+	for _, c := range []struct{ goos, flag, want string }{
+		{"darwin", "", DefaultCursorForm},
+		{"linux", "", DefaultCursorForm},
+		{"windows", "", CursorBoth},
+		{"darwin", CursorBoth, CursorBoth},
+		{"windows", CursorPowerShell, CursorPowerShell},
+		{"windows", CursorSh, CursorSh},
+	} {
+		if got := ChooseCursorForm(root, c.goos, c.flag); got != c.want {
+			t.Errorf("%s, flag %q: %q, want %q", c.goos, c.flag, got, c.want)
 		}
+	}
+	// Running init again on a Mac keeps Cursor recording on Windows.
+	for _, existing := range []string{CursorBoth, CursorPowerShell} {
+		if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}, CursorForm: existing}); err != nil {
+			t.Fatal(err)
+		}
+		if got := ChooseCursorForm(root, "darwin", ""); got != CursorBoth {
+			t.Errorf("project with %s hooks, init again on macOS: %q", existing, got)
+		}
+		if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}, GOOS: "darwin"}); err != nil || CursorForm(root) != CursorBoth {
+			t.Errorf("project with %s hooks, Run on macOS: %v, form %q", existing, err, CursorForm(root))
+		}
+	}
+	// A project with the sh form gets the system's default.
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}, CursorForm: CursorSh}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ChooseCursorForm(root, "darwin", ""); got != DefaultCursorForm {
+		t.Errorf("project with sh hooks on macOS: %q", got)
+	}
+	if got := ChooseCursorForm(root, "windows", ""); got != CursorBoth {
+		t.Errorf("project with sh hooks on Windows: %q", got)
+	}
+}
+
+// The commands each form writes, exactly: a change to them is deliberate, and 0.1.0's are still
+// recognised (TestOutdatedHookCommands).
+func TestCursorCommandForms(t *testing.T) {
+	for form, want := range map[string]string{
+		CursorSh:         `sh .sigdek/launch.sh hook cursor preToolUse | grep '^{' || echo '{"permission":"allow"}'`,
+		CursorPowerShell: `powershell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File .sigdek/launch.ps1 hook cursor preToolUse`,
+		CursorBoth:       `set \'sigdek' ; $i = ${\sigdek} ; $a = if ($null -ne $i) { $i | powershell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File .sigdek/launch.ps1 hook cursor preToolUse } else { powershell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File .sigdek/launch.ps1 hook cursor preToolUse } ; $a = $a | Where-Object { $_ -like "{*" } ; if ($a) { $a } else { "{""permission"":""allow""}" } ; exit 0 ; $null = ' ; sh .sigdek/launch.sh hook cursor preToolUse | grep "^{" || echo "{\"permission\":\"allow\"}" #'`,
+	} {
+		if got := cursorCommand("preToolUse", form); got != want {
+			t.Errorf("%s form:\n got %s\nwant %s", form, got, want)
+		}
+	}
+	// Neither half of the sh-and-PowerShell form may hold a single quote.
+	for _, ev := range adapter.CursorEvents {
+		if strings.Contains(dualPS(ev), "'") || strings.Contains(dualSh(ev), "'") {
+			t.Errorf("%s: a single quote in a half of the command", ev)
+		}
+	}
+}
+
+// QA1-SETUP-4, -5: .sigdek/README.md says only what's true of the hooks the project has.
+func TestReadmeDescribesTheHooksWritten(t *testing.T) {
+	for _, c := range []struct {
+		tools, form string
+		has, not    []string
+	}{
+		{"claude-code,cursor", CursorSh, []string{"Claude Code and Cursor record", shCommand("preToolUse"), "`sigdek init --windows`", claudeCommand}, []string{"ExecutionPolicy", "PowerShell reads"}},
+		{"claude-code,cursor", CursorBoth, append([]string{dualCommand("preToolUse"), dualSh("preToolUse"), "    set \\'sigdek'\n", "RemoteSigned` is there because", "one powershell process only"},
+			strings.Split(dualPS("preToolUse"), " ; ")...), []string{"grep '^{'"}},
+		{"claude-code,cursor", CursorPowerShell, []string{psCommand("preToolUse"), "named `powershell`", "gives Cursor no", "RemoteSigned` is there because"}, []string{"sh reads", "always answer.\n\n## "}},
+		{"claude-code", "", []string{"makes Claude Code record", claudeCommand}, []string{"## Cursor", "PowerShell"}},
+		{"cursor", CursorSh, []string{"makes Cursor record", shCommand("stop")[:20]}, []string{"## Claude Code"}},
+	} {
+		root := t.TempDir()
+		if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{c.tools}, CursorForm: c.form}); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(filepath.Join(root, ".sigdek", "README.md"))
+		for _, h := range c.has {
+			if !strings.Contains(string(b), h) {
+				t.Errorf("%s, %s: README lacks %q:\n%s", c.tools, c.form, h, b)
+			}
+		}
+		for _, n := range c.not {
+			if strings.Contains(string(b), n) {
+				t.Errorf("%s, %s: README has %q:\n%s", c.tools, c.form, n, b)
+			}
+		}
+	}
+	// Adding Claude Code later keeps the Cursor part, which init didn't touch this time.
+	root := t.TempDir()
+	Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}, CursorForm: CursorBoth})
+	Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code"}})
+	if b, _ := os.ReadFile(filepath.Join(root, ".sigdek", "README.md")); !strings.Contains(string(b), "## Claude Code") || !strings.Contains(string(b), dualSh("preToolUse")) {
+		t.Errorf("README after adding Claude Code:\n%s", b)
+	}
+}
+
+func TestFormNote(t *testing.T) {
+	if n := FormNote(CursorSh, "npx sigdek"); !strings.Contains(n, "`npx sigdek init --windows`") {
+		t.Errorf("sh: %q", n)
+	}
+	if n := FormNote(CursorPowerShell, "sigdek"); !strings.Contains(n, "named `powershell`") || !strings.Contains(n, "`sigdek init --windows`") {
+		t.Errorf("powershell: %q", n)
+	}
+	if n := FormNote(CursorBoth, "sigdek"); !strings.Contains(n, "on all three") {
+		t.Errorf("both: %q", n)
+	}
+}
+
+// QA2-SETUP-5: removing one tool's hooks rewrites .sigdek/README.md for what's left, and
+// removing the last takes it away with the launchers.
+func TestRemoveRewritesTheReadme(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}, CursorForm: CursorBoth}); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}, Remove: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(root, ".sigdek", "README.md"))
+	if strings.Contains(string(b), "## Cursor") || !strings.Contains(string(b), "makes Claude Code record what its agents do") || !strings.Contains(string(b), "## Claude Code") {
+		t.Errorf("README after removing Cursor:\n%s", b)
+	}
+	if !slices.Contains(changed, filepath.Join(root, ".sigdek", "README.md")) {
+		t.Errorf("the README isn't listed as changed: %v", changed)
+	}
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code"}, Remove: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".sigdek")); !os.IsNotExist(err) {
+		t.Errorf(".sigdek left after removing every hook: %v", err)
+	}
+}
+
+// QA2-SETUP-1: status reads a hook file the way the agent tools do: one that isn't valid JSON,
+// such as after a merge conflict, gives them no hooks, whatever its text says. init refuses to
+// change such a file, and works again once it's fixed.
+func TestReadHookFile(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"claude-code,cursor"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, claude := range []bool{true, false} {
+		h := ReadHookFile(root, claude)
+		if h.Invalid || !h.Mentions || h.Commands == 0 {
+			t.Errorf("claude %v, as written: %+v", claude, h)
+		}
+	}
+	path := filepath.Join(root, ".cursor", "hooks.json")
+	good, _ := os.ReadFile(path)
+	lines := strings.SplitAfter(string(good), "\n")
+	conflicted := strings.Join(lines[:4], "") + "<<<<<<< HEAD\n" + lines[4] + "=======\n" + lines[4] + ">>>>>>> feature\n" + strings.Join(lines[5:], "")
+	os.WriteFile(path, []byte(conflicted), 0o644)
+	if h := ReadHookFile(root, false); !h.Invalid || !h.Mentions || h.Commands != 0 || h.Path != ".cursor/hooks.json" {
+		t.Errorf("conflicted: %+v", h)
+	}
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}}); err == nil || !strings.Contains(err.Error(), "not valid JSON") {
+		t.Errorf("init on a conflicted file: %v", err)
+	}
+	os.WriteFile(path, good, 0o644) // fixed, by keeping one side
+	if _, err := Run(Options{Root: root, Version: "dev", Tools: []string{"cursor"}}); err != nil {
+		t.Errorf("init once fixed: %v", err)
+	}
+	if h := ReadHookFile(t.TempDir(), true); h.Invalid || h.Mentions || h.Commands != 0 {
+		t.Errorf("no file: %+v", h)
 	}
 }

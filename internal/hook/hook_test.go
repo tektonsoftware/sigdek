@@ -298,3 +298,21 @@ func TestSetupChangesUploadBeforeTheHookReturns(t *testing.T) {
 		t.Fatalf("uploaded while signed out: %v", waits)
 	}
 }
+
+// D10: Cursor on Windows pipes the input through PowerShell, which puts a UTF-8 byte order mark
+// in front. The input is still read, and a Block rule still applies.
+func TestInputWithAByteOrderMark(t *testing.T) {
+	home, dir := t.TempDir(), repo(t)
+	rules.Save(config.RulesPath(home), rules.Set{Version: 1, Rules: []rules.Rule{{ID: "no-rm", Effect: rules.Deny, Kinds: []string{"shell"}, Command: "rm -rf*"}}})
+	cwd, _ := json.Marshal(dir)
+	payload := `{"conversation_id":"c1","generation_id":"g1","hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"rm -rf build"},"workspace_roots":[` + string(cwd) + `]}`
+	var out bytes.Buffer
+	var n int
+	Run("cursor", "preToolUse", strings.NewReader("\xef\xbb\xbf"+payload+"\r\n"), &out, opts(home, &n))
+	if !strings.Contains(out.String(), `"permission":"deny"`) {
+		t.Fatalf("a Block rule didn't apply to input with a byte order mark: %q, log %q", out.String(), errorLog(home))
+	}
+	if head, _ := store.New(home).Head(); head.Seq != 1 {
+		t.Fatalf("want 1 record, have %d; log %q", head.Seq, errorLog(home))
+	}
+}

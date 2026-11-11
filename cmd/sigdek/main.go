@@ -21,7 +21,6 @@ import (
 	"github.com/tektonsoftware/sigdek/internal/hook"
 	"github.com/tektonsoftware/sigdek/internal/initcmd"
 	"github.com/tektonsoftware/sigdek/internal/login"
-	"github.com/tektonsoftware/sigdek/internal/rules"
 	"github.com/tektonsoftware/sigdek/internal/spawn"
 	"github.com/tektonsoftware/sigdek/internal/store"
 	"github.com/tektonsoftware/sigdek/internal/upload"
@@ -49,7 +48,7 @@ func init() {
 const usage = `sigdek records what AI coding agents do on this machine, for your team's evidence log.
 
 Usage:
-  sigdek init [--tools claude-code,cursor] [--powershell] [--offline] [--remove]
+  sigdek init [--tools claude-code,cursor] [--sh | --windows | --powershell] [--offline] [--remove]
                      Add SigDek's hooks to the current repository
   sigdek login       Connect this machine to your team (opens the browser)
   sigdek logout      Disconnect this machine
@@ -126,9 +125,27 @@ func main() {
 		return
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "sigdek: %v\n", err)
+		fmt.Fprintf(os.Stderr, "sigdek: %s\n", named(err.Error()))
 		os.Exit(1)
 	}
+}
+
+// command is how the person runs SigDek: "npx sigdek" when npm's launcher says npx started it
+// (npm/sigdek/bin/sigdek.js sets SIGDEK_VIA), otherwise "sigdek". Next steps are printed the same
+// way, so they work when copied.
+func command() string {
+	if os.Getenv("SIGDEK_VIA") == "npx" {
+		return "npx sigdek"
+	}
+	return "sigdek"
+}
+
+// named writes the `sigdek …` commands in a message the way the person runs SigDek.
+func named(s string) string {
+	if c := command(); c != "sigdek" {
+		return strings.ReplaceAll(s, "`sigdek ", "`"+c+" ")
+	}
+	return s
 }
 
 // noArgs is parseFlags for a command that takes no options or arguments.
@@ -186,20 +203,35 @@ func userAgent() string {
 func runInit(home string, args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	tools := fs.String("tools", "claude-code,cursor", "which agent tools to record")
-	ps := fs.Bool("powershell", false, "write Cursor hooks that run under PowerShell (Windows teams)")
+	sh := fs.Bool("sh", false, "write sh-only Cursor hooks, for macOS and Linux; Cursor on Windows records nothing with them")
+	windows := fs.Bool("windows", false, "write Cursor hooks that run under sh and under PowerShell, so Cursor records on Windows too\n(the default when init runs on Windows)")
+	ps := fs.Bool("powershell", false, "write PowerShell-only Cursor hooks; they need a command named \"powershell\" (Windows PowerShell),\nso Cursor on macOS and Linux records nothing with them")
 	offline := fs.Bool("offline", false, "pin only this machine's platform instead of fetching release checksums")
 	remove := fs.Bool("remove", false, "remove SigDek's hooks from this repository")
 	if err := parseFlags(fs, args); err != nil {
 		return err
+	}
+	if n := map[bool]int{true: 1}[*sh] + map[bool]int{true: 1}[*windows] + map[bool]int{true: 1}[*ps]; n > 1 {
+		return errors.New("init: --sh, --windows and --powershell write different Cursor hooks; choose one")
 	}
 	cwd, _ := os.Getwd()
 	info := gitinfo.Find(cwd)
 	if _, err := os.Stat(filepath.Join(info.Root, ".git")); err != nil {
 		return errors.New("run `sigdek init` inside a git repository")
 	}
+	flagForm := ""
+	switch {
+	case *sh:
+		flagForm = initcmd.CursorSh
+	case *windows:
+		flagForm = initcmd.CursorBoth
+	case *ps:
+		flagForm = initcmd.CursorPowerShell
+	}
+	form := initcmd.ChooseCursorForm(info.Root, runtime.GOOS, flagForm)
 	changed, err := initcmd.Run(initcmd.Options{
 		Root: info.Root, Version: version, Tools: []string{*tools},
-		PowerShell: *ps, Offline: *offline, Remove: *remove, Out: os.Stdout,
+		CursorForm: form, Offline: *offline, Remove: *remove, Out: os.Stdout,
 	})
 	rel := func(p string) string {
 		r, _ := filepath.Rel(info.Root, p)
@@ -254,17 +286,19 @@ func runInit(home string, args []string) error {
 		}
 		fmt.Printf("Add them anyway with `git add -f %s`, or change the rule that ignores them\n(`git check-ignore -v %s` names it).\n", strings.Join(add, " "), ignored[0])
 	}
-	if note := initcmd.WindowsNote(runtime.GOOS, toolList, *ps); note != "" {
-		fmt.Println("\n" + note)
+	for _, t := range toolList {
+		if note := initcmd.FormNote(form, command()); t == "cursor" && note != "" {
+			fmt.Println("\n" + note)
+		}
 	}
 	if version == "dev" {
 		fmt.Println("\nThis is a development build, so the launcher can't download it. Set SIGDEK_BIN to this binary to test.")
 	} else if lock, err := initcmd.ReadLock(info.Root); err == nil && len(lock.Sums) < len(initcmd.Targets) {
 		fmt.Printf("\nWarning: recorder.lock pins SigDek %s for %s only, because of --offline. Teammates on any other\n"+
-			"platform won't be recorded. Run `sigdek init` again with network access to pin every platform.\n",
+			"platform won't be recorded. Run `"+command()+" init` again with network access to pin every platform.\n",
 			version, strings.ReplaceAll(initcmd.Platform(), "_", "/"))
 	}
-	fmt.Println("\nNext: run `sigdek login` to connect this machine to your team. Until then, records stay on this machine.")
+	fmt.Println("\nNext: run `" + command() + " login` to connect this machine to your team. Until then, records stay on this machine.")
 	return nil
 }
 
@@ -400,7 +434,7 @@ func runLog(home string, args []string) error {
 		return err
 	}
 	if len(lines) == 0 {
-		fmt.Println("No records yet. Run `sigdek init` in a repository, then use Claude Code or Cursor there.")
+		fmt.Println(named("No records yet. Run `sigdek init` in a repository, then use Claude Code or Cursor there."))
 		return nil
 	}
 	w := bufio.NewWriter(os.Stdout)
@@ -457,123 +491,6 @@ func oneLine(s string, max int) string {
 	return s
 }
 
-func runStatus(home string) error {
-	now := time.Now()
-	fmt.Printf("Recorder    sigdek %s (%s/%s)\n", version, runtime.GOOS, runtime.GOARCH)
-	// Read only: status never creates the device or any other file.
-	dev, exists, err := config.ReadDevice(home)
-	switch {
-	case err != nil:
-		fmt.Printf("Device      unreadable: %v\n", err)
-	case !exists:
-		fmt.Println("Device      not set up yet (it is created the first time an agent runs here)")
-	default:
-		fmt.Printf("Device      %s\n", dev.ID)
-	}
-	st := store.New(home)
-	head, herr := st.Head()
-	cur := st.LoadCursor()
-	set, rerr := rules.LoadChecked(config.RulesPath(home))
-	health := upload.LoadHealth(home)
-
-	if dev.SignedIn() {
-		org := dev.OrgName
-		if org == "" {
-			org = dev.Org
-		}
-		if info, err := os.Stat(config.TokenRejected(home)); err == nil {
-			fmt.Printf("Signed in   %s, %s, but the server rejected this machine's token (%s): run `sigdek login` again\n", dev.User, org, when(info.ModTime(), now))
-		} else {
-			fmt.Printf("Signed in   %s, %s\n", dev.User, org)
-		}
-		fmt.Printf("Uploads to  %s\n", dev.Ingest())
-		switch paused, _ := upload.Paused(home, now); {
-		case health.LastError != "" && paused && now.Before(health.RetryAfter):
-			fmt.Printf("Uploads     waiting until %s after: %s\n", health.RetryAfter.Local().Format("Jan 02 15:04"), oneLine(health.LastError, 120))
-		case health.LastError != "":
-			fmt.Printf("Uploads     the last try (%s) failed: %s\n", when(health.LastTry, now), oneLine(health.LastError, 120))
-		case !health.LastOK.IsZero():
-			fmt.Printf("Uploads     working; the last one finished %s\n", when(health.LastOK, now))
-		}
-	} else {
-		fmt.Println("Signed in   no (records stay on this machine; run `sigdek login`)")
-	}
-	if herr != nil {
-		fmt.Printf("Records     unreadable: %v\n", herr)
-	} else {
-		unsent := head.Seq - cur.Seq
-		if !dev.SignedIn() {
-			unsent = 0
-		}
-		fmt.Printf("Records     %d on this machine, %d waiting to upload\n", head.Seq, max(unsent, 0))
-		if health.Refused > 0 || health.Skipped > 0 {
-			fmt.Printf("            The server refused %d as malformed and %d as too large; they show as breaks in your report.\n", health.Refused, health.Skipped)
-		}
-	}
-	problems := set.Problems()
-	broken := map[string]bool{}
-	for _, p := range problems {
-		broken[p.Rule] = true
-	}
-	deny, flag := 0, 0
-	for _, r := range set.Rules {
-		switch {
-		case broken[r.ID]:
-		case r.Effect == rules.Deny:
-			deny++
-		default:
-			flag++
-		}
-	}
-	source := "your team's rules, version " + fmt.Sprint(set.Version)
-	if set.Version == 0 {
-		source = "built-in defaults"
-	}
-	fmt.Printf("Rules       %d flag, %d deny (%s)\n", flag, deny, source)
-	if rerr != nil {
-		fmt.Printf("            %v\n", rerr)
-	}
-	for _, p := range problems {
-		fmt.Printf("            Not working: %s. Fix it in the dashboard.\n", oneLine(p.Error(), 140))
-	}
-
-	cwd, _ := os.Getwd()
-	if root := gitinfo.Find(cwd).Root; isRepo(root) {
-		claudeFile, cursorFile := filepath.Join(root, ".claude", "settings.json"), filepath.Join(root, ".cursor", "hooks.json")
-		fmt.Printf("This repo   Claude Code hooks: %s; Cursor hooks: %s\n", yesNo(fileHas(claudeFile, "hook claude-code")), yesNo(fileHas(cursorFile, "hook cursor")))
-		// Older hook commands passed on sh's status 2 ("block") when the launcher was missing, or
-		// left Cursor without an answer when it printed nothing; `sigdek init` writes current ones.
-		if len(initcmd.Outdated(root)) > 0 {
-			fmt.Println("            The hook commands were written by an older sigdek init. Run `sigdek init` again and commit the\n" +
-				"            change, so a missing or broken launcher (an old branch, a deleted .sigdek) can't block the agent.")
-		}
-		if lock, err := initcmd.ReadLock(root); err == nil && lock.Version != "" && lock.Sums[initcmd.Platform()] == "" {
-			fmt.Printf("            .sigdek/recorder.lock has no build of SigDek %s for %s, so nothing is recorded on this\n"+
-				"            machine in this repo. Run `sigdek init` with network access, then commit .sigdek/recorder.lock.\n",
-				lock.Version, strings.ReplaceAll(initcmd.Platform(), "_", "/"))
-		}
-	}
-	user := claudeUserDir()
-	if user != "" && fileHas(filepath.Join(user, "settings.json"), "hook claude-code") {
-		fmt.Println("User level  Claude Code hooks found in " + tildePath(filepath.Join(user, "settings.json")))
-	}
-	if on, where := pluginState(user, gitinfo.Find(cwd).Root); where != "" {
-		if on {
-			fmt.Println("Plugin      SigDek's Claude Code plugin is on (" + where + ")")
-		} else {
-			fmt.Println("Plugin      SigDek's Claude Code plugin is turned off here (" + where + ")")
-		}
-	}
-	if at, msg := lastError(config.ErrorLog(home)); msg != "" && !(strings.HasPrefix(msg, "upload: ") && at.Before(health.ErrorsOverAt())) {
-		// An upload error from before the last good upload, or before the last sign-in, is over;
-		// anything else stays, such as a warning from that upload.
-		fmt.Printf("Last error  %s: %s\n", when(at, now), oneLine(msg, 160))
-	} else {
-		fmt.Println("Errors      none")
-	}
-	return nil
-}
-
 func isRepo(root string) bool {
 	_, err := os.Stat(filepath.Join(root, ".git"))
 	return err == nil
@@ -615,13 +532,6 @@ func lastError(path string) (time.Time, string) {
 	return at, e.Error
 }
 
-func yesNo(b bool) string {
-	if b {
-		return "yes"
-	}
-	return "no"
-}
-
 // claudeUserDir is where Claude Code keeps its user settings: CLAUDE_CONFIG_DIR, or ~/.claude.
 func claudeUserDir() string {
 	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
@@ -641,57 +551,6 @@ func tildePath(p string) string {
 		}
 	}
 	return p
-}
-
-// pluginState says whether Claude Code has SigDek's plugin on here, as Claude Code decides it:
-// the repository's .claude/settings.local.json, then its .claude/settings.json, then the user's
-// settings, the first that sets "sigdek@<any marketplace>" in enabledPlugins. where names that
-// file, and is empty when none does (the plugin isn't installed, or isn't SigDek's concern here).
-func pluginState(userDir, repoRoot string) (on bool, where string) {
-	var files [][2]string
-	if repoRoot != "" && isRepo(repoRoot) {
-		files = append(files,
-			[2]string{filepath.Join(repoRoot, ".claude", "settings.local.json"), "this repo's .claude/settings.local.json"},
-			[2]string{filepath.Join(repoRoot, ".claude", "settings.json"), "this repo's .claude/settings.json"})
-	}
-	if userDir != "" {
-		p := filepath.Join(userDir, "settings.json")
-		files = append(files, [2]string{p, tildePath(p)})
-	}
-	for _, f := range files {
-		if set, enabled := pluginSetting(f[0]); set {
-			return enabled, f[1]
-		}
-	}
-	return false, ""
-}
-
-// pluginSetting reads one Claude Code settings file's enabledPlugins entry for SigDek's plugin,
-// from any marketplace ("sigdek@sigdek" from SigDek's own). An entry that turns it on wins over
-// one that turns it off, in the rare file that lists it from two marketplaces.
-func pluginSetting(path string) (set, enabled bool) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return false, false
-	}
-	var s struct {
-		EnabledPlugins map[string]json.RawMessage `json:"enabledPlugins"`
-	}
-	if json.Unmarshal(b, &s) != nil {
-		return false, false
-	}
-	for k, v := range s.EnabledPlugins {
-		if !strings.HasPrefix(k, "sigdek@") {
-			continue
-		}
-		var on bool
-		if json.Unmarshal(v, &on) != nil {
-			continue
-		}
-		set = true
-		enabled = enabled || on
-	}
-	return set, enabled
 }
 
 func fileHas(path, needle string) bool {
