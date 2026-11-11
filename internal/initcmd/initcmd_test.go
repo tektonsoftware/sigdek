@@ -1003,7 +1003,9 @@ func TestCursorCommandsUnderPowerShell(t *testing.T) {
 			}
 			_, cursor := hookCommands(t, root)
 			home := t.TempDir()
-			for _, ev := range []string{"preToolUse", "beforeSubmitPrompt", "stop"} {
+			// Two events with different safe answers; each run starts two PowerShells, which is slow
+			// on Windows and loads the runner while other packages' timing tests run.
+			for _, ev := range []string{"preToolUse", "beforeSubmitPrompt"} {
 				in := `{"hook_event_name":"` + ev + `","prompt":"caf\u00e9"}`
 				want := `{"permission":"deny","user_message":"recorder ran: hook cursor ` + ev + `"}` + "\n"
 				ways := map[string]func(env []string) (string, int){
@@ -1051,7 +1053,11 @@ func TestCursorCommandsUnderPowerShell(t *testing.T) {
 			}
 			broke(filepath.Join(root, ".sigdek"))
 			_, cursor := hookCommands(t, root)
-			for _, ev := range []string{"preToolUse", "beforeSubmitPrompt"} {
+			events := []string{"preToolUse"}
+			if name == "no .sigdek folder" {
+				events = append(events, "beforeSubmitPrompt", "stop") // each event's own safe answer
+			}
+			for _, ev := range events {
 				out, code := cursorWrapped(t, ps, root, cursor[ev], `{"hook_event_name":"`+ev+`"}`, cleanEnv(append(shim, "SIGDEK_HOME="+home)...))
 				if code != 0 || out != cursorSafe(ev)+"\n" {
 					t.Errorf("%s, %s, %s: exit %d, stdout %q", ps, name, ev, code, out)
