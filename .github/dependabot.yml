@@ -1,0 +1,13 @@
+# Weekly updates for the actions in .github/workflows, all in one pull request. The recorder
+# has no Go dependencies and no npm lockfile, so there's nothing else to watch.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: Workflows
