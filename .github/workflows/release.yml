@@ -13,6 +13,9 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Only v* tags may use the release environment, so its secrets (NPM_TOKEN here,
+    # WINGET_TOKEN in the winget job) reach only tag runs.
+    environment: release
     # One run per tag at a time: a run for a tag that's deleted and pushed again waits for the
     # one before it to finish, instead of publishing alongside it. (GitHub keeps only the
     # newest waiting run.)
@@ -224,7 +227,8 @@ jobs:
       - name: Publish to npm
         env:
           # The first release uses a token (NPM_TOKEN). After that, each package trusts this
-          # workflow directly (npm trusted publishing, OIDC), and the token can be deleted.
+          # workflow directly (npm trusted publishing, OIDC; on npmjs.com, give it release.yml
+          # and the environment "release"), and the token can be deleted.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           PRIVATE: ${{ github.event.repository.private }}
         run: |
@@ -276,6 +280,8 @@ jobs:
     needs: release
     if: needs.release.outputs.highest == 'true'
     runs-on: windows-latest
+    # For WINGET_TOKEN (see the release job).
+    environment: release
     steps:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
