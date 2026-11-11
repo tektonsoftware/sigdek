@@ -113,7 +113,7 @@ SIGDEK_BIN=$PWD/sigdek           # makes launchers use your build instead of dow
 
 `SIGDEK_BIN` works for anyone, which is also a way to switch the recorder off; see "Can be switched off" above.
 
-Releases: push a tag like `v0.3.0`. The release workflow builds six targets, publishes them with `checksums.txt`, publishes the npm packages with provenance (when the `NPM_TOKEN` secret is set), pins both plugins, the Homebrew formula and the Scoop manifest to the new version, and submits it to winget (when the `WINGET_TOKEN` secret is set).
+Releases: push a tag like `v0.3.0`. The release workflow builds six targets, publishes them with `checksums.txt` and `install.sh`, publishes the npm packages with provenance (when the `NPM_TOKEN` secret is set), pins both plugins, the Homebrew formula and the Scoop manifest to the new version, and submits it to winget (when the `WINGET_TOKEN` secret is set).
 
 ## License
 
