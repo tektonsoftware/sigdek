@@ -396,10 +396,66 @@ func TestPluginLauncherStepsAsideForRepoHooks(t *testing.T) {
 				t.Errorf("%s %v: started in a subdirectory, the plugin must record: %q", sh, args, out)
 			}
 		}
+		// D11: a command a person runs through the plugin (/sigdek:connect runs `login`) isn't a
+		// hook event, so the plugin runs it even in a project with SigDek's own hooks.
+		if out, _ := plugin.run("", env, "login", "--no-browser"); !strings.Contains(out, "recorder ran: login --no-browser") {
+			t.Errorf("%s: login through the plugin stepped aside: %q", sh, out)
+		}
 		// The repository's own launcher runs as usual.
 		repo := &launcher{t: t, shell: sh, dir: filepath.Join(project, ".sigdek"), env: plugin.env}
 		if out, _ := repo.run("{}", env, "hook", "claude-code"); !strings.Contains(out, "recorder ran") {
 			t.Errorf("%s: the repository's launcher must not step aside: %q", sh, out)
+		}
+	}
+}
+
+// D11: /sigdek:connect runs `sigdek login` through the plugin's own launcher and the recorder
+// it downloaded for its hooks. The command the skill tells Claude to run is the one its
+// allowed-tools rule lets run without asking, and it signs in even in a project that has
+// SigDek's own hooks, where the plugin's hooks step aside.
+func TestConnectSkillRunsLoginThroughThePluginLauncher(t *testing.T) {
+	b, err := os.ReadFile("../../plugins/claude-code/skills/connect/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill := strings.ReplaceAll(string(b), "\r\n", "\n")
+	front, body, ok := strings.Cut(strings.TrimPrefix(skill, "---\n"), "\n---\n")
+	if !ok || !strings.HasPrefix(skill, "---\n") {
+		t.Fatal("SKILL.md has no frontmatter")
+	}
+	const command = `CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" sh "${CLAUDE_PLUGIN_ROOT}/scripts/launch.sh" login`
+	for _, want := range []string{"name: connect\n", "disable-model-invocation: true\n", "allowed-tools: Bash(" + command + ") Read\n"} {
+		if !strings.Contains(front+"\n", want) {
+			t.Errorf("frontmatter lacks %q:\n%s", want, front)
+		}
+	}
+	if !strings.Contains(body, "\n   "+command+"\n") || !strings.Contains(body, "run_in_background: true") {
+		t.Errorf("the skill doesn't give the command to run in the background:\n%s", body)
+	}
+	fake := fakeRecorder(t)
+	for _, sh := range shells(t) {
+		project := t.TempDir()
+		os.MkdirAll(filepath.Join(project, ".git"), 0o755)
+		if _, err := Run(Options{Root: project, Version: "dev", Tools: []string{"claude-code,cursor"}}); err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(t.TempDir(), "plugin")
+		os.MkdirAll(filepath.Join(root, "scripts"), 0o755)
+		os.WriteFile(filepath.Join(root, "scripts", "launch.sh"), launchSh, 0o644)
+		data := filepath.Join(t.TempDir(), "plugin data")
+		run := strings.NewReplacer("${CLAUDE_PLUGIN_DATA}", data, "${CLAUDE_PLUGIN_ROOT}", root).Replace(command)
+		out, code := runAs(sh, project, run, "", []string{"SIGDEK_BIN=" + fake, "CLAUDE_PROJECT_DIR=" + project})
+		if code != 0 || !strings.HasPrefix(out, "recorder ran: login\n") {
+			t.Errorf("%s: exit %d, %q", sh, code, out)
+		}
+		// Without SIGDEK_BIN, the launcher looks for the recorder in the plugin's data folder.
+		lock := "version=7.2.0\nurl=https://example.invalid\n" + Platform() + "=" + strings.Repeat("a", 64) + "\n"
+		os.WriteFile(filepath.Join(root, "scripts", "recorder.lock"), []byte(lock), 0o644)
+		rec, _ := os.ReadFile(fake)
+		os.MkdirAll(filepath.Join(data, "7.2.0"), 0o755)
+		os.WriteFile(filepath.Join(data, "7.2.0", "sigdek"), rec, 0o755)
+		if out, _ := runAs(sh, project, run, "", []string{"CLAUDE_PROJECT_DIR=" + project, "SIGDEK_HOME=" + t.TempDir()}); !strings.HasPrefix(out, "recorder ran: login\n") {
+			t.Errorf("%s: the plugin's cached recorder didn't run: %q", sh, out)
 		}
 	}
 }

@@ -25,12 +25,15 @@ case "$0" in */*) DIR=${0%/*} ;; *) DIR=. ;; esac
 # SigDek's own hooks for the same tool (`sigdek init`), so nothing is recorded twice. Only the
 # project folder itself counts: Claude Code reads .claude/settings.json from the folder the
 # session started in, and Cursor reads .cursor/hooks.json from the workspace root, so an agent
-# started in a subdirectory of a SigDek repository runs no repository hooks.
+# started in a subdirectory of a SigDek repository runs no repository hooks. Only hook events
+# step aside: a command a person runs through the plugin, such as `login`, always runs.
 case "$DIR" in
   .sigdek | */.sigdek) ;;
   *)
-    if [ "${2:-}" = cursor ]; then P=${CURSOR_PROJECT_DIR:-$PWD} F=.cursor/hooks.json; else P=${CLAUDE_PROJECT_DIR:-$PWD} F=.claude/settings.json; fi
-    if [ -f "$P/.sigdek/launch.sh" ] && [ -f "$P/$F" ] && grep -q 'sigdek/launch\.' "$P/$F" 2>/dev/null; then exit 0; fi
+    if [ "${1:-}" = hook ]; then
+      if [ "${2:-}" = cursor ]; then P=${CURSOR_PROJECT_DIR:-$PWD} F=.cursor/hooks.json; else P=${CLAUDE_PROJECT_DIR:-$PWD} F=.claude/settings.json; fi
+      if [ -f "$P/.sigdek/launch.sh" ] && [ -f "$P/$F" ] && grep -q 'sigdek/launch\.' "$P/$F" 2>/dev/null; then exit 0; fi
+    fi
     ;;
 esac
 
