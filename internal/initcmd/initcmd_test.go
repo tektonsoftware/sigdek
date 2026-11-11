@@ -424,7 +424,8 @@ func TestConnectSkillRunsLoginThroughThePluginLauncher(t *testing.T) {
 		t.Fatal("SKILL.md has no frontmatter")
 	}
 	const command = `CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" sh "${CLAUDE_PLUGIN_ROOT}/scripts/launch.sh" login`
-	for _, want := range []string{"name: connect\n", "disable-model-invocation: true\n", "allowed-tools: Bash(" + command + ") Read\n"} {
+	// QA1-SETUP-6: Read only in Claude Code's temporary folder, where background output goes.
+	for _, want := range []string{"name: connect\n", "disable-model-invocation: true\n", "allowed-tools: Bash(" + command + ") Read(//tmp/claude-*/**) Read(//private/tmp/claude-*/**)\n"} {
 		if !strings.Contains(front+"\n", want) {
 			t.Errorf("frontmatter lacks %q:\n%s", want, front)
 		}
@@ -456,6 +457,46 @@ func TestConnectSkillRunsLoginThroughThePluginLauncher(t *testing.T) {
 		os.WriteFile(filepath.Join(data, "7.2.0", "sigdek"), rec, 0o755)
 		if out, _ := runAs(sh, project, run, "", []string{"CLAUDE_PROJECT_DIR=" + project, "SIGDEK_HOME=" + t.TempDir()}); !strings.HasPrefix(out, "recorder ran: login\n") {
 			t.Errorf("%s: the plugin's cached recorder didn't run: %q", sh, out)
+		}
+	}
+}
+
+// QA1-SETUP-15: a command a person runs through the launcher (the plugin's /sigdek:connect runs
+// `login`) is told why the recorder didn't run, and when the launcher tries again; a hook in the
+// same state prints nothing at all.
+func TestLauncherTellsAPersonWhyTheRecorderDidntRun(t *testing.T) {
+	for _, sh := range shells(t) {
+		l := newLauncher(t, sh, filepath.Join(t.TempDir(), "plugin", "scripts"), launchSh)
+		l.lock("version=7.3.0\nurl=http://127.0.0.1:9\n" + Platform() + "=" + strings.Repeat("a", 64) + "\n")
+		cache := t.TempDir()
+		run := func(args ...string) (string, string, int) {
+			cmd := exec.Command(sh, append([]string{filepath.Join(l.dir, "launch.sh")}, args...)...)
+			cmd.Env = append(append([]string{}, l.env...), "SIGDEK_CACHE="+cache)
+			cmd.Stdin = strings.NewReader("{}")
+			var out, errb strings.Builder
+			cmd.Stdout, cmd.Stderr = &out, &errb
+			err := cmd.Run()
+			code := 0
+			if ee, ok := err.(*exec.ExitError); ok {
+				code = ee.ExitCode()
+			}
+			return out.String(), errb.String(), code
+		}
+		if out, errs, code := run("login"); code != 0 || out != "" || !strings.Contains(errs, "SigDek: couldn't download the recorder (SigDek 7.3.0) from http://127.0.0.1:9") || !strings.Contains(errs, "tries again in 1 minute.") {
+			t.Errorf("%s, failed download: exit %d, stdout %q, stderr %q", sh, code, out, errs)
+		}
+		if _, errs, _ := run("login"); !strings.Contains(errs, "couldn't be downloaded the last time the launcher tried. It tries again 1 minute after that try.") {
+			t.Errorf("%s, during the back-off: stderr %q", sh, errs)
+		}
+		for _, hook := range [][]string{{"hook", "claude-code"}, {"hook", "cursor", "stop"}} {
+			if out, errs, code := run(hook...); code != 0 || errs != "" || (out != "" && out != "{}\n") {
+				t.Errorf("%s, %v: exit %d, stdout %q, stderr %q; a hook says nothing", sh, hook, code, out, errs)
+			}
+		}
+		os.MkdirAll(filepath.Join(cache, "7.3.0"), 0o755)
+		os.WriteFile(filepath.Join(cache, "7.3.0", ".downloading"), nil, 0o644)
+		if _, errs, _ := run("login"); !strings.Contains(errs, "is still downloading in the background. Try again in a minute.") {
+			t.Errorf("%s, downloading: stderr %q", sh, errs)
 		}
 	}
 }
