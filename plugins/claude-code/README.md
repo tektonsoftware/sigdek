@@ -48,7 +48,7 @@ Secrets (cloud keys, tokens, passwords in URLs and flags, private keys) are stri
 - Files attached to a prompt with @ aren't recorded.
 - On Windows, Claude Code runs hooks through Git Bash. Without Git Bash it uses PowerShell, where SigDek records nothing (and blocks nothing).
 - In a repository set up with `sigdek init`, the plugin's hooks step aside in sessions started at the repository's root, so nothing is recorded twice.
-- `/sigdek:connect` asks Claude to run the plugin's own `sigdek login` in the background and to show you its link and code. It needs `sh`, so on Windows without Git Bash, run `npx sigdek login` in a terminal instead.
+- `/sigdek:connect` asks Claude to run the plugin's own `sigdek login` in the background and to show you its link and code. It lets Claude run only that command, and read only files in Claude Code's temporary folder on macOS and Linux (`/tmp/claude-…`), where that command's output goes, without asking you. Elsewhere, Claude Code may ask before Claude reads the output. It needs `sh`, so on Windows without Git Bash, run `npx sigdek login` in a terminal instead.
 - Cursor can run Claude Code's hooks too. When Cursor sends an event to SigDek's Claude Code hook, the recorder stands aside, so Cursor's actions are recorded only by SigDek's Cursor plugin or a repository's Cursor hooks, never as Claude Code.
 - Recording adds a few milliseconds per action; CI fails the build above 50 ms.
 
