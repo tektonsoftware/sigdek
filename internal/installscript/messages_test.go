@@ -170,6 +170,7 @@ how to fix it, please visit the web page mentioned above.
 	}{
 		{"wget drop after an IPv6 try", "wget", ipv6Drop, 4, 3, "failed (Connection closed at byte 200000. Giving up.), so nothing was installed. Check the network connection"},
 		{"wget 404", "wget", "http://x/checksums.txt:\n2026-11-10 19:12:40 ERROR 404: Not Found.\n", 8, 3, "(ERROR 404: Not Found.). Check that v" + latest + " is a SigDek release"},
+		{"wget stall in headers", "wget", "--2026-11-10 20:24:15--  http://x/checksums.txt\nConnecting to 127.0.0.1:18531... connected.\nHTTP request sent, awaiting response... Read error (Operation timed out) in headers.\nGiving up.\n\n", 4, 3, "failed (Read error (Operation timed out) in headers.), so nothing was installed."},
 		{"wget silent", "wget", "", 4, 3, "failed (wget: exit 4), so nothing was installed."},
 		{"wget only its advice", "wget", "To connect to x insecurely, use `--no-check-certificate'.\n", 4, 3, "failed (wget: exit 4), so nothing was installed."},
 		{"wget certificate", "wget", wgetCert, 5, 1, "couldn't be verified (ERROR: cannot verify 127.0.0.1's certificate, issued by 'CN=127.0.0.1':), so nothing was installed. Certificate checking must stay on: use curl, or"},

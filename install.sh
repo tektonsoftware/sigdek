@@ -103,16 +103,17 @@ persist() {
     # The reason: for curl, the first line it wrote (curl: (<code>) ...). For wget, the last line
     # with ERROR, failed or unable in it, else its last line, counting only what it wrote after
     # its last successful connection (a failed try at another address, such as IPv6, comes
-    # before it) and never its advice to turn certificate checking off. Then wget's timestamp
-    # and speed go, and so do control characters (it can quote the server).
+    # before it), never its advice to turn certificate checking off, and not a closing "Giving
+    # up." on its own line (the cause is on the line before). Then wget's timestamp, speed and
+    # "awaiting response..." go, and so do control characters (it can quote the server).
     WHY=$(awk -v get="$GET" '
       get == "curl" { if (NF && l == "") l = $0; next }
       / connected\.$/ { e = ""; l = ""; next }
-      /no-check-certificate|insecurely/ { next }
+      /no-check-certificate|insecurely|^(Giving up|Retrying)\.$/ { next }
       /ERROR|failed|unable/ { e = $0 }
       NF { l = $0 }
       END { print (e != "" ? e : l) }' <"$TMP/err" | tr -d '[:cntrl:]' |
-      sed -e 's/^[0-9][0-9-]* [0-9][0-9:]* //' -e 's/^([^)]*) - //')
+      sed -e 's/^[0-9][0-9-]* [0-9][0-9:]* //' -e 's/^([^)]*) - //' -e 's/^HTTP request sent, awaiting response\.\.\. //')
     [ -n "$WHY" ] || WHY="$GET: exit $code"
     # curl's and wget's exit status when the certificate couldn't be verified. Trying again won't
     # help, and checking must stay on.
@@ -297,7 +298,7 @@ main() {
     esac
     # Any other ~, as in ~user/bin, would make a folder named ~user.
     case "$DIR" in
-      '~'*) die "SIGDEK_INSTALL_DIR starts with a ~ that this script can't expand (only ~ and ~/ are). Write the full path, or use \$HOME. $SETDIR" ;;
+      '~'*) die "SIGDEK_INSTALL_DIR starts with a ~ that this script can't expand (only ~ and ~/ are). Write the full path, or use \$HOME." ;;
     esac
   elif [ -n "${HOME:-}" ]; then
     DIR=$HOME/.local/bin
