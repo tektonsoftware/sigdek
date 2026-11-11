@@ -4,7 +4,12 @@ SigDek runs on developer machines and records what coding agents do, so we treat
 
 ## Reporting a vulnerability
 
-Email **security@sigdek.com** with a description and, if you can, steps to reproduce. Please don't open a public issue for a security problem. We'll acknowledge your report within two business days and keep you updated until it's fixed.
+Please don't open a public issue for a security problem. Report it privately, in either of these ways:
+
+- **On GitHub:** [report a vulnerability](https://github.com/tektonsoftware/sigdek/security/advisories/new) with GitHub's private vulnerability reporting (the repository's Security tab, then "Report a vulnerability").
+- **By email:** write to **security@sigdek.com**.
+
+Include a description and, if you can, steps to reproduce. We'll acknowledge your report within two business days and keep you updated until it's fixed.
 
 ## What's in scope
 
