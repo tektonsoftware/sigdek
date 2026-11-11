@@ -24,6 +24,7 @@ Email **security@sigdek.com** with a description and, if you can, steps to repro
 ## How releases are protected
 
 - Each release publishes `checksums.txt` with the SHA-256 of every binary.
-- `install.sh` (macOS and Linux) refuses a binary whose SHA-256 differs from its line in the same release's `checksums.txt`. That catches a damaged or wrong download, not a tampered release, since the checksum comes from the same place as the binary.
+- Releases are immutable: once a release is published, its files and tag can't be changed, and GitHub attaches an attestation to each. `gh release verify <tag>` checks a release's attestation, and `gh release verify-asset <tag> <file>` checks a downloaded file against it.
+- `install.sh` (macOS and Linux) refuses a binary whose SHA-256 differs from its line in the same release's `checksums.txt`. The checksum still comes from the same release as the binary, so it catches a damaged or wrong download, not a release that was bad when it was published. The script itself reaches you through sigdek.com's redirect to the release.
 - The launchers download only the version pinned in `.sigdek/recorder.lock` (written by `sigdek init`) or, for a plugin, in the plugin's own `scripts/recorder.lock`, and refuse any binary whose SHA-256 differs.
 - The recorder has no third-party Go dependencies.
