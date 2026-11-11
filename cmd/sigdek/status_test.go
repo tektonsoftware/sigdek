@@ -123,8 +123,10 @@ func TestStatusForATeamProject(t *testing.T) {
 	// Connected, with uploads in each state.
 	c.signIn()
 	c.has("[x] Connected to Larkspur Labs as ana@larkspur.example", "[ ] Nothing has uploaded yet, because there are no records yet")
+	// A record made while signed out, so the hook starts no upload that could race this test.
+	config.SaveDevice(c.env.home, config.Device{ID: "dev_status"})
 	runHook(t, c.env.home, []string{"claude-code"}, cc(c.root, "UserPromptSubmit", `,"prompt":"x"`))
-	waitForUploader(t, c.env.home)
+	c.signIn()
 	c.health(`{"last_ok":"` + time.Now().Add(-3*time.Minute).UTC().Format(time.RFC3339) + `"}`)
 	st := store.New(c.env.home)
 	st.SaveCursor(store.Cursor{})
