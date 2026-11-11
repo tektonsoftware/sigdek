@@ -32,7 +32,10 @@ func TestMain(m *testing.M) {
 	if runtime.GOOS == "windows" {
 		binary += ".exe"
 	}
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
+	// -buildvcs=false: in a checkout at a release tag (the release workflow's Test step), Go would
+	// otherwise stamp the tag's version, which init (main.go) turns into a pinned release, and these
+	// tests expect a development build that pins "dev".
+	if out, err := exec.Command("go", "build", "-buildvcs=false", "-o", binary, ".").CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "build failed: %v\n%s", err, out)
 		os.Exit(1)
 	}
