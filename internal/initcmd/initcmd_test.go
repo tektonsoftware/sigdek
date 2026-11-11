@@ -890,8 +890,8 @@ func TestCursorCommandPassesOnTheAnswer(t *testing.T) {
 // the input in: `Get-Content payload.json -Raw | & { $input | <command> }`. The default command
 // then runs launch.ps1 with that input and passes on its answer, under Windows PowerShell 5.1
 // and PowerShell 7, and answers for itself when launch.ps1 is missing or broken. Elsewhere,
-// PowerShell 7 (where installed) reads the same command and, with no Windows PowerShell to run
-// launch.ps1, still answers.
+// PowerShell 7 (where installed) reads the same command the same way; with no `powershell` to
+// run launch.ps1, it still answers.
 func TestCursorCommandsUnderCursorsPowerShellWrapper(t *testing.T) {
 	var shells []string
 	for _, ps := range []string{"powershell", "pwsh"} {
@@ -939,8 +939,10 @@ func TestCursorCommandsUnderCursorsPowerShellWrapper(t *testing.T) {
 			in := `{"hook_event_name":"` + ev + `","prompt":"caf\u00e9"}`
 			got := filepath.Join(t.TempDir(), "stdin")
 			out, code := wrap(ps, root, cursor[ev], in, "SIGDEK_HOME="+home, "SIGDEK_BIN="+exe, "SIGDEK_TEST_RECORDER=answer", "SIGDEK_TEST_STDIN="+got)
+			// The PowerShell part runs launch.ps1 with Windows PowerShell; GitHub's macOS runners
+			// also have a `powershell` (PowerShell 7), elsewhere there is none and it answers itself.
 			want := cursorSafe(ev) + "\n"
-			if runtime.GOOS == "windows" {
+			if _, err := exec.LookPath("powershell"); err == nil {
 				want = `{"permission":"deny","user_message":"recorder ran: hook cursor ` + ev + `"}` + "\n"
 				if b, _ := os.ReadFile(got); !strings.Contains(string(b), `"hook_event_name":"`+ev+`"`) {
 					t.Errorf("%s %s: the recorder got %q", ps, ev, b)
