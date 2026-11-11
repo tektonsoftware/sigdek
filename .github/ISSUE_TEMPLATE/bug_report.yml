@@ -1,0 +1,74 @@
+name: Bug report
+description: The recorder, a launcher or a plugin doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a security problem, don't open an issue: report it privately, as [SECURITY.md](https://github.com/tektonsoftware/sigdek/blob/main/SECURITY.md) describes.
+
+        Issues are public. Leave out tokens, secrets, private paths and anything from your records you wouldn't post.
+  - type: input
+    id: version
+    attributes:
+      label: sigdek version
+      description: The output of `sigdek version`. If `sigdek` isn't on your PATH, give the `version=` line of `.sigdek/recorder.lock` in your repository, or the plugin's version.
+      placeholder: sigdek 0.1.0 (darwin/arm64)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: The OS, its version and the processor.
+      placeholder: macOS 15.5 on Apple silicon
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent
+      options:
+        - Claude Code
+        - Cursor
+        - Both
+    validations:
+      required: true
+  - type: input
+    id: agent-version
+    attributes:
+      label: Agent version
+      description: For Claude Code, the output of `claude --version`. For Cursor, the version in About Cursor.
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How SigDek was installed
+      description: Choose each one you use.
+      multiple: true
+      options:
+        - Plugin (Claude Code or Cursor)
+        - sigdek init in the repository
+        - npm (npx sigdek or npm install -g sigdek)
+        - install.sh
+        - Scoop
+        - winget
+        - go install
+        - Something else (say what below)
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, step by step, and what happened. Include the command or agent action, and any error message in full.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened instead.
+    validations:
+      required: true

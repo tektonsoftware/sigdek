@@ -1,0 +1,10 @@
+blank_issues_enabled: false
+# GitHub shows only http and https contact links (it drops mailto: ones), so the support
+# address is in the text.
+contact_links:
+  - name: Report a security problem privately
+    url: https://github.com/tektonsoftware/sigdek/security/advisories/new
+    about: Use GitHub's private vulnerability reporting, or email security@sigdek.com. SECURITY.md has the details.
+  - name: Questions about the hosted service
+    url: https://sigdek.com/docs/
+    about: Email support@sigdek.com about your SigDek account or the hosted service. The docs cover teams, rules, reports and troubleshooting.
