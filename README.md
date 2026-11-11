@@ -160,12 +160,14 @@ No Uploads line yet? Nothing has uploaded: use the agent once and wait for its r
 >
 > [x] Claude Code records in this project, through its hooks in .claude/settings.json
 > [x] Cursor records in this project, through its hooks in .cursor/hooks.json
+>     Cursor on Windows can't run these hooks. If anyone uses Cursor on Windows here, run
+>     `npx sigdek init --windows` and commit the change.
 > [x] SigDek 0.1.1, the recorder this project pins, is downloaded and matches its checksum
 > [x] Connected to Larkspur Labs as ana@larkspur.example
 > [x] Uploads work: the last one finished just now, and nothing is waiting
 > ```
 >
-> `[ ]` marks something missing, with the next step under it. `[-]` marks something you may not need, such as Cursor for someone who uses only Claude Code.
+> That's from a Mac, in a project whose Cursor hooks run only on macOS and Linux; with `--windows` hooks the note under Cursor isn't there. `[ ]` marks something missing, with the next step under it. `[-]` marks something you may not need, such as Cursor for someone who uses only Claude Code.
 
 ### If something goes wrong
 

@@ -302,7 +302,7 @@ func FormNote(form, cmd string) string {
 	switch form {
 	case CursorSh:
 		return "Note: Cursor on Windows can't run these Cursor hooks. If anyone uses Cursor on Windows in this\n" +
-			"project, run `" + cmd + " init --windows` instead."
+			"project, run `" + cmd + " init --windows` before you commit: its hooks work there too."
 	case CursorBoth:
 		return "These Cursor hooks run under sh on macOS and Linux and under PowerShell on Windows, so Cursor\n" +
 			"records on all three. .sigdek/README.md shows what each shell runs."
