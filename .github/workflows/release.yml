@@ -13,6 +13,12 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # One run per tag at a time: a run for a tag that's deleted and pushed again waits for the
+    # one before it to finish, instead of publishing alongside it. (GitHub keeps only the
+    # newest waiting run.)
+    concurrency:
+      group: release-${{ github.ref_name }}
+      cancel-in-progress: false
     outputs:
       # Whether this tag is the highest published version (the Publish step says).
       highest: ${{ steps.publish.outputs.highest }}
@@ -56,14 +62,27 @@ jobs:
           # it, and published only if that copy holds exactly the files in dist/ (by name), its
           # checksums.txt has a well-formed line for each binary and nothing else, every binary
           # matches its line (sha256sum --check --strict), checksums.txt is this run's byte for
-          # byte, and install.sh is this tag's. A draft left by an earlier run is used only if its
-          # checksums.txt is this run's (the toolchain is pinned, so a re-run of the same commit
-          # builds the same bytes). A re-run after a later step failed reuses the published
-          # release, checked the same way except that its checksums.txt is its own, and its files
-          # from here on, so npm, the plugins and the manifests pin exactly those bytes.
+          # byte, and install.sh is this tag's. So a draft left by an earlier run, or a release an
+          # earlier run published, is used only if it's this run's build (the toolchain is pinned,
+          # so a re-run of the same commit builds the same bytes). A re-run after a later step
+          # failed reuses the published release, checked that way, and its files from here on,
+          # so npm, the plugins and the manifests pin exactly those bytes. Nothing is created or
+          # published once the tag points at another commit than this run's.
           tag=$GITHUB_REF_NAME
           work=$(mktemp -d)
           files() { (cd "$1" && LC_ALL=C ls -A); }
+          # Stops unless the tag still points at this run's commit. Once it's deleted and pushed
+          # again, the run for that push publishes it.
+          same_commit() {
+            if ! sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha); then
+              echo "::error::Couldn't find which commit the tag $tag points at (gh's message is above). If the tag was deleted, the run for its next push publishes it; otherwise run this again."
+              exit 1
+            fi
+            if [ "$sha" != "$GITHUB_SHA" ]; then
+              echo "::error::The tag $tag now points at another commit than this run's. Let the run for the new commit publish it."
+              exit 1
+            fi
+          }
           # The release's files, by name, in $work/assets. A failed listing stops the step.
           assets() {
             if ! gh release view "$tag" --json assets --jq '.assets[].name' > "$work/assets"; then
@@ -109,6 +128,7 @@ jobs:
             echo "::error::gh found no release $tag, but the list of releases has one (gh says this when a lookup fails). Run this again."
             exit 1
           else
+            same_commit
             gh release create "$tag" dist/* --draft \
               --title "SigDek recorder $tag" \
               --notes "Binaries for macOS, Linux and Windows on x64 and arm64. Check them against checksums.txt, or let the launcher or install.sh do it."
@@ -118,15 +138,19 @@ jobs:
             true | false) ;;
             *) echo "::error::gh said release $tag's isDraft is \"$draft\". Run this again."; exit 1 ;;
           esac
-          rebuilt="The draft release $tag was built from different files than this run (another commit, or a changed build). Delete the whole draft (gh release delete $tag --yes; the tag stays) and run this again."
+          # A release whose checksums.txt isn't this run's, byte for byte, holds another build.
+          rebuilt="was built from different files than this run (another commit, or a changed build)."
 
           if [ "$draft" = true ]; then
+            where="The draft release $tag"
+            fix="Delete the wrong files from the draft (gh release delete-asset $tag <file>), or the whole draft, and run this again; a re-run uploads any that are missing."
+            refix="Delete the whole draft (gh release delete $tag --yes; the tag stays) and run this again."
             assets
             if grep -qxF checksums.txt "$work/assets"; then
               mkdir "$work/draft"
               gh release download "$tag" --pattern checksums.txt --dir "$work/draft"
               if ! cmp -s dist/checksums.txt "$work/draft/checksums.txt"; then
-                echo "::error::$rebuilt"
+                echo "::error::$where $rebuilt $refix"
                 exit 1
               fi
             fi
@@ -134,11 +158,10 @@ jobs:
             for f in dist/*; do
               grep -qxF "${f#dist/}" "$work/assets" || gh release upload "$tag" "$f"
             done
-            where="The draft release $tag"
-            fix="Delete the wrong files from the draft (gh release delete-asset $tag <file>), or the whole draft, and run this again; a re-run uploads any that are missing."
           else
             where="The published release $tag"
             fix="A published release can't change, so the fix is a new version."
+            refix=$fix
           fi
 
           # The release as GitHub stores it, downloaded afresh.
@@ -147,8 +170,8 @@ jobs:
           if [ -s "$work/assets" ]; then
             gh release download "$tag" --dir release
           fi
-          if [ "$draft" = true ] && [ -e release/checksums.txt ] && ! cmp -s dist/checksums.txt release/checksums.txt; then
-            echo "::error::$rebuilt"
+          if [ -e release/checksums.txt ] && ! cmp -s dist/checksums.txt release/checksums.txt; then
+            echo "::error::$where $rebuilt $refix"
             exit 1
           fi
           files dist > "$work/want"
@@ -180,6 +203,7 @@ jobs:
           fi
 
           if [ "$draft" = true ]; then
+            same_commit
             gh release edit "$tag" --draft=false --latest="$highest"
           else
             echo "::notice::$tag is already published; using its files."
