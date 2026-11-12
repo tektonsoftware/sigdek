@@ -129,7 +129,8 @@ winget isn't available yet: SigDek's first submission is waiting for Microsoft's
 | Command | What it does |
 |---|---|
 | `sigdek init` | Add SigDek's hooks to the current repository. `--windows` writes Cursor hooks that also run on Windows; `--remove` takes them out. `sigdek init -h` lists every option |
-| `sigdek login` / `logout` | Connect or disconnect this machine; sign-in happens in the browser. [More](docs/setup.md#commands) |
+| `sigdek login` | Connect this machine to your team; sign-in happens in the browser |
+| `sigdek logout` | Disconnect this machine. [More](docs/setup.md#commands) |
 | `sigdek status` | A checklist of what is set up and working, with the next step for anything that isn't |
 | `sigdek log` | Recent records from this machine |
 | `sigdek verify` | Check that no local record was changed or removed |
