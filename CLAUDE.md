@@ -1,6 +1,6 @@
 # SigDek recorder
 
-The `sigdek` command and the Claude Code and Cursor plugins. It records what AI coding agents do on a developer's machine, as a hash chain per machine, applies the team's Flag and Block rules, and uploads to the hosted service once signed in. `README.md` is the user guide; `SECURITY.md` says what the recorder can and can't guarantee.
+The `sigdek` command and the Claude Code and Cursor plugins. It records what AI coding agents do on a developer's machine, as a hash chain per machine, applies the team's Flag and Block rules, and uploads to the hosted service once signed in. `README.md` is the front page and `docs/` the user guide; `SECURITY.md` says what the recorder can and can't guarantee.
 
 **This repository is, or will be, public.** Keep private business details, account IDs, customer data and captured records out of commits, issues and this file. Raw capture data stays on the machine that made it.
 
