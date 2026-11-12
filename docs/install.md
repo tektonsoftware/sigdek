@@ -9,11 +9,12 @@
 | Any OS, with Node.js | `npm install -g sigdek` |
 | macOS and Linux, without Node.js | `curl -fsSL https://sigdek.com/install.sh \| sh`, or without curl, `wget -qO- https://sigdek.com/install.sh \| sh` (wget's certificate checking depends on how it was built; prefer curl) |
 | Windows, Scoop | `scoop bucket add sigdek https://github.com/tektonsoftware/sigdek` then `scoop install sigdek` |
-| Windows, winget | `winget install TektonSoftware.SigDek`, available a few days after each release, once Microsoft merges its pull request |
 | Go 1.24 or later | `go install github.com/tektonsoftware/sigdek/cmd/sigdek@latest` |
 | Anything else | Download the binary for your platform from [GitHub releases](https://github.com/tektonsoftware/sigdek/releases) and check it against `checksums.txt` |
 
 The install script and Scoop need no administrator.
+
+**winget isn't available yet.** The release workflow submits each release to winget as a pull request to Microsoft's package repository, and the first submissions are waiting for Microsoft's review. Until one is merged, `winget install TektonSoftware.SigDek` finds no package; use Scoop, npm or the binary from GitHub releases. Once SigDek is in winget, each new release will reach it after Microsoft merges that release's pull request.
 
 ## The install script
 
@@ -40,5 +41,5 @@ Settings go after the pipe, on the `sh` that runs the script: `curl -fsSL https:
 Every channel except `go install`, which compiles from source, installs the same binaries, built once per release.
 
 - The npm package is a small launcher that runs the one for your platform from an `@tektonsoftware/sigdek-*` package.
-- The Scoop manifest (`bucket/`) lives in this repository and is updated by the release workflow, which also opens the winget pull request.
+- The Scoop manifest (`bucket/`) lives in this repository and is updated by the release workflow, which also opens the winget pull request (see above).
 - The workflow writes a Homebrew formula (`Formula/`) too, but Homebrew isn't an install option yet: without prebuilt bottles, Homebrew on macOS refuses it when the Command Line Tools are out of date.

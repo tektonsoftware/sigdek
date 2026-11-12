@@ -10,7 +10,9 @@ Cursor reads `.cursor/hooks.json` from the workspace root, so open the project's
 
 ## Cursor also runs Claude Code's hooks
 
-Cursor also runs Claude Code's hooks by default (its Third-Party Imports setting loads `.claude/settings.json`, `.claude/settings.local.json` and `~/.claude/settings.json`), so in a repository set up with `sigdek init` each Cursor action reaches SigDek's Claude Code hook as well as its Cursor hook. SigDek's Claude Code hook stands aside when Cursor runs it, so each Cursor action is recorded once, by the Cursor hook; Cursor's actions are recorded only through SigDek's Cursor hooks (`sigdek init` or the Cursor plugin).
+Cursor also runs Claude Code's hooks by default: its Third-Party Imports setting loads `.claude/settings.json`, `.claude/settings.local.json` and `~/.claude/settings.json`. So in a repository set up with `sigdek init`, each Cursor action reaches SigDek's Claude Code hook as well as its Cursor hook.
+
+SigDek's Claude Code hook stands aside when Cursor runs it. Each Cursor action is recorded once, by SigDek's Cursor hooks (from `sigdek init` or the Cursor plugin), never as Claude Code.
 
 ## The Cursor plugin
 

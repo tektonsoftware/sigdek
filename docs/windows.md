@@ -30,11 +30,17 @@ CI runs each command inside the PowerShell wrapper Cursor is reported to use on 
 
 ### The execution policy
 
-The PowerShell commands run launch.ps1 with `-ExecutionPolicy RemoteSigned`, for that one process only. A project set up with SigDek 0.1.0 has `Bypass` there instead. That still works, and `sigdek status` counts it as current; running `sigdek init` again replaces it with the current commands.
+The PowerShell commands run launch.ps1 with `-ExecutionPolicy RemoteSigned`, for that one process only. launch.ps1 isn't signed, and Windows' default policy on a PC refuses every script.
 
-launch.ps1 isn't signed, and Windows' default policy on a PC refuses every script. RemoteSigned still refuses a launch.ps1 marked as downloaded from the internet, such as one unpacked from a downloaded ZIP file; a git clone isn't marked, and `Unblock-File .sigdek\launch.ps1` removes the mark.
+**From 0.1.0.** A project set up with SigDek 0.1.0's `sigdek init --powershell` has `-ExecutionPolicy Bypass` in its Cursor commands; 0.1.0 had no sh-and-PowerShell form. Those commands still work, and `sigdek status` counts them as current. Running plain `sigdek init` again moves the project to the sh-and-PowerShell commands, which changes what runs on every machine; `sigdek init --powershell` keeps the PowerShell-only form, now with RemoteSigned.
 
-[Microsoft's docs](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_execution_policies) add that RemoteSigned might not run a script from a network share (a UNC path) on systems that don't tell UNC paths from internet paths, and that its zone check can fail where the Windows desktop shell isn't available, as on Windows Server Core. In those cases the sh-and-PowerShell commands give Cursor its safe answer, the `--powershell` commands give it none, and nothing is recorded; `Bypass`, which 0.1.0 wrote, ran them.
+**Where RemoteSigned refuses launch.ps1:**
+
+- **A launch.ps1 marked as downloaded from the internet,** such as one unpacked from a downloaded ZIP file. A git clone isn't marked, and `Unblock-File .sigdek\launch.ps1` removes the mark. `sigdek status` on Windows says when the file is marked.
+- **A network share (a UNC path),** on systems that don't tell UNC paths from internet paths, as [Microsoft's docs](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_execution_policies) say it might.
+- **Where the Windows desktop shell isn't available,** as on Windows Server Core, where Microsoft's docs say its zone check can fail.
+
+In those cases nothing is recorded. The sh-and-PowerShell commands give Cursor its safe answer; the `--powershell` commands give it none. `Bypass`, which 0.1.0 wrote, ran them.
 
 ### What sigdek status checks on Windows
 

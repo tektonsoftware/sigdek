@@ -9,11 +9,30 @@ There are three ways to start. Using Cursor? Pick [I use Cursor](#i-use-cursor).
 Every command below says where it goes:
 
 - **In Claude Code's chat:** type it where you talk to Claude Code, then press Return (Enter on Windows).
-- **In a terminal:** on macOS, press Command and Space, type Terminal, and press Return. On Windows, open Start, type PowerShell, and choose Windows PowerShell. On Linux, open Terminal from your apps. In VS Code or Cursor, open your project's folder, then choose Terminal, then New Terminal: it opens in the project's folder already. Elsewhere, go to the folder first: type `cd` and a space, drag the folder onto the window, and press Return.
+- **In a terminal:**
+  - **macOS:** press Command and Space, type Terminal, and press Return.
+  - **Windows:** open Start, type PowerShell, and choose Windows PowerShell.
+  - **Linux:** open Terminal from your apps.
+  - **VS Code or Cursor:** open your project's folder, then choose Terminal, then New Terminal. It opens in the project's folder already.
+
+  Outside VS Code and Cursor, go to the folder first: type `cd` and a space, drag the folder onto the window, and press Return.
 
 ## Do you have Node.js?
 
-The `npx` commands need it. In a terminal, run `node -v`. You should see a version such as `v24.6.0`; v18 or later is fine. If it says `command not found: node` (macOS), `node: command not found` (Linux) or `The term 'node' is not recognized` (Windows), install Node.js from [nodejs.org](https://nodejs.org/en/download): under "Or get a prebuilt Node.js", choose the macOS Installer (.pkg) or the Windows Installer (.msi), not the commands above it, then open a new terminal. Or [install the `sigdek` command](install.md) (the install script and Scoop need no administrator), and type `sigdek` wherever these steps say `npx sigdek`.
+The `npx` commands need it. In a terminal, run `node -v`. You should see a version such as `v24.6.0`; v18 or later is fine.
+
+If Node.js isn't installed, it says:
+
+| System | Message |
+|---|---|
+| macOS | `command not found: node` |
+| Linux | `node: command not found` |
+| Windows | `The term 'node' is not recognized` |
+
+Then either:
+
+- install Node.js from [nodejs.org](https://nodejs.org/en/download): under "Or get a prebuilt Node.js", choose the macOS Installer (.pkg) or the Windows Installer (.msi), not the commands above it, then open a new terminal; or
+- [install the `sigdek` command](install.md) (the install script and Scoop need no administrator), and type `sigdek` wherever these steps say `npx sigdek`.
 
 The first time you run `npx sigdek`, npx asks before it downloads SigDek:
 
@@ -43,7 +62,7 @@ The Claude Code plugin records you in every project you open in Claude Code on t
    /plugin install sigdek@sigdek
    ```
 
-   Claude Code shows what the plugin adds. Choose **Install for you (user scope)**. The summary starts with `✓ Installed sigdek.` and ends with `Plugin is now active.`, or with `Run /reload-plugins to apply.`, and in that case Claude Code reloads for you. (These two outputs are as Claude Code's plugin docs give them, not captured from a chat here. `claude plugin marketplace add tektonsoftware/sigdek`, the same step typed in a terminal, printed `✔ Successfully added marketplace: sigdek (declared in user settings)`.)
+   Claude Code shows what the plugin adds. Choose **Install for you (user scope)**. The summary starts with `✓ Installed sigdek.` and ends with `Plugin is now active.`, or with `Run /reload-plugins to apply.`, and in that case Claude Code reloads for you. Claude Code's exact wording may differ. Typed in a terminal instead, as `claude plugin marketplace add tektonsoftware/sigdek`, the first step prints `✔ Successfully added marketplace: sigdek (declared in user settings)`.
 
    **In VS Code.** In the Claude Code panel, type `/plugins`. Manage plugins opens. On its Marketplaces tab, enter `tektonsoftware/sigdek`. Then on the Plugins tab, search for **sigdek**, choose **Install**, then **Install for you**.
 
@@ -125,9 +144,11 @@ Set it up once in the project, and everyone who works in it is recorded in Claud
 
    If the machine recorded anything before you connected it, one more line says what happens to those records. Nothing to do.
 
+   If nobody on your team uses SigDek yet, signing in asks you to name your team, and its 14-day trial starts, with no card needed. If your team already uses SigDek, ask an owner or admin to invite you first (step 3): without an invitation, signing in asks you to name a new team, with its own trial.
+
    If you have SigDek's Claude Code plugin, `/sigdek:connect` in Claude Code's chat does the same, in this project too.
 
-3. **Invite your team.** In the dashboard, an owner or admin opens People and chooses **Invite people**. Each teammate accepts, gets the change from step 1, and runs `npx sigdek login` once on their own machine. From then on, Claude Code and Cursor record for them whenever they start in the project's top folder.
+3. **Invite your team.** In the dashboard, an owner or admin opens People and chooses **Invite people**. Each teammate accepts the emailed invitation, gets the change from step 1, and then runs `npx sigdek login` once on their own machine. From then on, Claude Code and Cursor record for them whenever they start in the project's top folder.
 
 Then **watch Activity**: when an agent finishes its turn, what it did uploads and shows on the dashboard's Activity page.
 
@@ -156,7 +177,31 @@ In a terminal, in your project's folder:
 npx sigdek status
 ```
 
-Status answers as a checklist, without going online: it reads only files on this machine. Each item that's missing has the next step under it. When everything is set up, it looks like this:
+Status answers as a checklist, without going online: it reads only files on this machine. `[ ]` marks something missing, with the next step under it. Under the checklist are the details support asks for: the rules in use, the records on this machine, the last error and the device.
+
+Right after `npx sigdek init`, before any agent has run in the project and before signing in:
+
+```
+sigdek 0.1.1 (darwin/arm64)
+
+[x] Claude Code records in this project, through its hooks in .claude/settings.json
+[x] Cursor records in this project, through its hooks in .cursor/hooks.json
+    Cursor on Windows can't run these hooks. If anyone uses Cursor on Windows here, run
+    `npx sigdek init --windows` and commit the change.
+[ ] SigDek 0.1.1, the recorder this project pins, isn't downloaded yet
+    It downloads, and is checked, the first time Claude Code or Cursor runs here.
+[ ] This machine isn't connected to a team, so its records stay on it
+    Next: run `npx sigdek login`.
+[ ] No records on this machine yet
+    Next: start Claude Code or Cursor here and give the agent a task.
+
+Rules       12 flag, 0 block (built-in defaults)
+Records     0 on this machine
+Errors      none
+Device      not set up yet (it is created the first time an agent runs here)
+```
+
+After the agent's first few actions, still not signed in:
 
 ```
 sigdek 0.1.1 (darwin/arm64)
@@ -166,30 +211,23 @@ sigdek 0.1.1 (darwin/arm64)
     Cursor on Windows can't run these hooks. If anyone uses Cursor on Windows here, run
     `npx sigdek init --windows` and commit the change.
 [x] SigDek 0.1.1, the recorder this project pins, is downloaded and matches its checksum
-[x] Connected to Acme as alice@acme.example
-[x] Uploads work: the last one finished just now, and nothing is waiting
-
-Rules       12 flag, 0 block (built-in defaults)
-Records     0 on this machine
-Errors      none
-Device      dev_example, uploading to https://ingest.sigdek.com
-```
-
-That's from a Mac, in a project whose Cursor hooks run only on macOS and Linux; with `--windows` hooks the note under Cursor isn't there. Under the checklist are the details support asks for: the rules in use, the records on this machine, the last error and the device. (The two connected lines and the device line came from a device file made by hand, not from a real sign-in, so the device id is invented. Signed in, they show your team, your email and your device.)
-
-`[ ]` marks something missing, with the next step under it. For example, before the machine is connected:
-
-```
 [ ] This machine isn't connected to a team, so its records stay on it
     Next: run `npx sigdek login`.
+
+Rules       12 flag, 0 block (built-in defaults)
+Records     3 on this machine, the newest written just now
+Errors      none
+Device      dev_08536049ff679466db42a176
 ```
 
-and before the first agent runs in the project:
+Both are from a Mac, in a project whose Cursor hooks run only on macOS and Linux; with `--windows` hooks the note under Cursor isn't there.
 
-```
-[ ] SigDek 0.1.1, the recorder this project pins, isn't downloaded yet
-    It downloads, and is checked, the first time Claude Code or Cursor runs here.
-```
+Once the machine is signed in:
+
+- the connected item reads `[x] Connected to Acme as alice@acme.example`, with your team and your email;
+- an item on uploads follows it. When everything works, it reads `[x] Uploads work: the last one finished just now, and nothing is waiting`. Before the first upload, it says why nothing has uploaded yet, and what to do;
+- the Rules line names your team's rules and their version, such as `12 flag, 1 block (your team's rules, version 3)`;
+- the Device line adds where it uploads, such as `uploading to https://ingest.sigdek.com`.
 
 `[-]` marks something you may not need, such as Cursor for someone who uses only Claude Code. With the plugin, the first line says Claude Code records through SigDek's plugin, and names the settings file that turns it on.
 
@@ -210,3 +248,15 @@ and before the first agent runs in the project:
 | `/sigdek:connect` says SigDek's recorder is still downloading, or couldn't be downloaded | The plugin downloads its recorder the first time it runs on a machine. Run `/sigdek:connect` again a little later, or run `npx sigdek login` in a terminal, which doesn't need that download. |
 | Nothing shows in Activity | Records upload when the agent finishes its turn, so wait until its reply is done. Then run `npx sigdek status` in the project's folder: each line marked `[ ]` says what's missing and the next step. If it says this machine isn't connected to a team, connect it again. With the project setup, start Claude Code or Cursor in the project's folder. |
 | Cursor on Windows records nothing | Run `npx sigdek status` in the project's folder. If it says Cursor on Windows can't run this project's Cursor hooks, run `npx sigdek init --windows` there and commit the change. See [Cursor on Windows](#cursor-on-windows) and [Windows](windows.md). |
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `sigdek init` | Add SigDek's hooks to the current repository. `--windows`, `--sh` and `--powershell` choose the form of the Cursor hooks (see [Windows](windows.md)); `--tools` picks Claude Code, Cursor or both; `--offline` pins only this machine's platform. `--remove` takes the hooks out, and `.sigdek/` once no hooks use it. `sigdek init -h` lists every option |
+| `sigdek login` / `logout` | Connect or disconnect this machine; sign-in happens in the browser. Logout asks the server that signed it in to revoke the machine's token and says if it couldn't. Agents are still recorded after logout, on the machine only; those records upload if it signs in to the same team again, and login says how many |
+| `sigdek status` | A checklist of what is set up and working, with the next step for anything that isn't. It reads only local files |
+| `sigdek log` | Recent records from this machine (`-n` for how many, `--json` for the raw records) |
+| `sigdek verify` | Check that no local record was changed or removed |
+| `sigdek flush` | Upload now (normally automatic, in the background), without waiting out a back-off |
+| `sigdek version` | The version and platform |

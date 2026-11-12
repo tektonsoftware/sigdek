@@ -2,6 +2,8 @@
 
 SigDek records what AI coding agents do on your team's machines (who ran which agent, which tool, the command or file, and whether it ran or was blocked) and turns that record into evidence an auditor or a customer can read.
 
+**Free and paid.** The recorder and plugins in this repository are free and open source (Apache-2.0). They record to a local log on your machine with no account, and their 12 built-in rules flag risky actions and block nothing. The team dashboard, your team's own Flag and Block rules, and evidence reports need a SigDek plan: Team is $99 a month for up to 10 people and Business $199 for up to 50, with a 14-day trial and no card. [Pricing](https://sigdek.com/pricing/)
+
 [![Latest release](https://img.shields.io/github/v/release/tektonsoftware/sigdek)](https://github.com/tektonsoftware/sigdek/releases/latest)
 [![CI on main](https://github.com/tektonsoftware/sigdek/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tektonsoftware/sigdek/actions/workflows/ci.yml?query=branch%3Amain)
 [![npm](https://img.shields.io/npm/v/sigdek)](https://www.npmjs.com/package/sigdek)
@@ -16,23 +18,19 @@ SigDek records what AI coding agents do on your team's machines (who ran which a
 
 ## What it does
 
-- **Records each agent action** in Claude Code and Cursor: who, which agent, which tool, the command or file path, and the outcome. Never prompt text, file contents or command output.
-- **Applies your team's Flag and Block rules** on the machine, before the action runs.
-- **The hosted service at [sigdek.com](https://sigdek.com)** turns the records into a team dashboard and an evidence report that anyone can check at [app.sigdek.com/verify](https://app.sigdek.com/verify).
+- **Records each agent action** in Claude Code and Cursor: who, which agent, which tool, the command or file path, and the outcome. It never records prompt text, file contents or command output.
+- **Applies rules on the machine.** Block rules stop an action before it runs; Flag rules mark it in the record. Without an account, only the built-in Flag rules apply.
+- **The hosted service at [sigdek.com](https://sigdek.com)** (paid) turns the records into a team dashboard and an evidence report. Anyone can check at [app.sigdek.com/verify](https://app.sigdek.com/verify) that a report's PDF or CSV came from SigDek and hasn't changed since.
 
 <img src="docs/images/report-top-2x.webp" width="600" alt="The top of the first page of SigDek's sample report: Acme, 1 July to 30 September 2026. Between 1 July and 30 September 2026, 12 people at Acme ran AI coding agents in 1,571 sessions across 4 repositories. Rules blocked 2 of 182 sensitive actions. One silent stretch was found.">
 
-This repository is the open-source recorder that runs on developer machines, plus the Claude Code and Cursor plugins that install it, under Apache-2.0. SigDek is a product of Tekton Software.
+This repository is the open-source recorder that runs on developer machines, plus the Claude Code and Cursor plugins that install it. SigDek is a product of Tekton Software.
 
 ## Quick start
 
-| Path | For | Commands | Full steps |
-|---|---|---|---|
-| Just me, in Claude Code | Recording yourself, in every project you open in Claude Code on this machine | `/plugin marketplace add tektonsoftware/sigdek`, `/plugin install sigdek@sigdek`, `/sigdek:connect` | [setup.md](docs/setup.md#just-me-in-claude-code) |
-| Our team's project | Everyone who works in a project, in Claude Code and Cursor. You can change the project. | `npx sigdek init`, commit, `npx sigdek login` | [setup.md](docs/setup.md#our-teams-project) |
-| I use Cursor | Cursor users. The Cursor plugin isn't on Cursor's Marketplace yet. | The team project's steps, in Cursor | [setup.md](docs/setup.md#i-use-cursor) |
+### Just me, in Claude Code
 
-**Just me, in Claude Code.** In Claude Code's chat (in VS Code or the desktop app, [see the steps](docs/setup.md#just-me-in-claude-code)):
+Records you, in every project you open in Claude Code on this machine. In Claude Code in a terminal, type these in its chat:
 
 ```
 /plugin marketplace add tektonsoftware/sigdek
@@ -40,9 +38,11 @@ This repository is the open-source recorder that runs on developer machines, plu
 /sigdek:connect
 ```
 
-`/sigdek:connect` shows a link and a code; approve the same code in your browser.
+`/sigdek:connect` shows a link and a code; approve the same code in your browser. The `/plugin` commands don't run in VS Code or the desktop app: [steps for those](docs/setup.md#just-me-in-claude-code).
 
-**Our team's project.** In a terminal, in the project's top folder:
+### Our team's project
+
+Records everyone who works in a project, in Claude Code and Cursor. In a terminal, in the project's top folder:
 
 ```sh
 npx sigdek init
@@ -51,36 +51,42 @@ git commit -m "Record agent activity with SigDek"
 npx sigdek login
 ```
 
-If anyone uses Cursor on Windows in the project, run `npx sigdek init --windows` instead ([why](docs/setup.md#cursor-on-windows)). Each teammate runs `npx sigdek login` once.
+If anyone uses Cursor on Windows in the project, run `npx sigdek init --windows` instead ([why](docs/setup.md#cursor-on-windows)). Then invite your team: in the dashboard, open People and choose **Invite people**. Each teammate accepts the invitation, then runs `npx sigdek login` once. Without an invitation, signing in asks them to name a new team instead. [Full steps](docs/setup.md#our-teams-project)
+
+### I use Cursor
+
+SigDek's Cursor plugin isn't on Cursor's Marketplace yet, so follow [Our team's project](#our-teams-project) in Cursor's terminal. [Steps for Cursor](docs/setup.md#i-use-cursor)
+
+### Try it without an account
+
+Run `npx sigdek init` in a project (or add the plugin), give your agent a task, then run `npx sigdek log` to see what was recorded and `npx sigdek verify` to check the local chain. Nothing leaves the machine until you sign in.
 
 `npx` needs Node.js 18 or later. Without it, [get the `sigdek` command](#getting-the-sigdek-command) and type `sigdek` for `npx sigdek`.
 
 ## Did it work?
 
-In the project's folder, `npx sigdek status` answers as a checklist, without going online:
+In the project's folder, `npx sigdek status` answers as a checklist, without going online. After the agent's first action, before signing in:
 
 ```
-sigdek 0.1.1 (darwin/arm64)
-
 [x] Claude Code records in this project, through its hooks in .claude/settings.json
 [x] Cursor records in this project, through its hooks in .cursor/hooks.json
     Cursor on Windows can't run these hooks. If anyone uses Cursor on Windows here, run
     `npx sigdek init --windows` and commit the change.
 [x] SigDek 0.1.1, the recorder this project pins, is downloaded and matches its checksum
-[x] Connected to Acme as alice@acme.example
-[x] Uploads work: the last one finished just now, and nothing is waiting
+[ ] This machine isn't connected to a team, so its records stay on it
+    Next: run `npx sigdek login`.
 ```
 
-That's from a Mac with plain `npx sigdek init` hooks; with `--windows` hooks the note under Cursor isn't there. `[ ]` marks something missing, with the next step under it. [Did it work?](docs/setup.md#did-it-work) has the full output, and [If something goes wrong](docs/setup.md#if-something-goes-wrong) the fixes.
+Once signed in, that item reads `[x] Connected to Acme as alice@acme.example`, and an item on uploads follows, such as `[x] Uploads work: the last one finished just now, and nothing is waiting`. `[ ]` marks something missing, with the next step under it. [Did it work?](docs/setup.md#did-it-work) has the full output, and [If something goes wrong](docs/setup.md#if-something-goes-wrong) the fixes.
 
 ## What it records, and what it never does
 
 - **Never recorded:** prompt text (only a hash and its length), file contents, command output. The stored hashes can confirm a guess at a whole input. [More](docs/recording.md#never-recorded)
 - **Secrets are stripped** from commands, paths and URLs before anything is written. It's best effort. [More](docs/recording.md#secrets-are-stripped)
 - **Tamper-evident once SigDek has received them:** a hash chain per machine, checked on every upload. The local log can be rewritten by someone with access to the machine before it uploads. [More](docs/recording.md#tamper-evident-once-sigdek-has-received-them)
-- **Never blocks by accident:** any error lets the action go ahead. Only your team's Block rules stop an action (one exception: the PowerShell-only Cursor form). [More](docs/recording.md#never-blocks-your-work-by-accident)
+- **Never blocks by accident:** any error lets the action go ahead, and only your team's Block rules stop an action. Two exceptions: the PowerShell-only Cursor form, and Cursor's own bug that shows "Hook blocked" for its CLI on Windows started from Git Bash. [More](docs/recording.md#never-blocks-your-work-by-accident)
 - **Anyone using the machine can switch recording off,** by removing the hooks, uninstalling the plugin or setting `SIGDEK_BIN`. The built-in rules flag an agent editing SigDek's setup, and the Coverage report shows a machine that goes silent; neither prevents it. [More](docs/recording.md#can-be-switched-off-by-anyone-using-the-machine)
-- **Fast:** a few milliseconds per event; CI fails the build when the slowest 5% take over 50 ms. The first event on a machine waits for a download. [More](docs/recording.md#fast)
+- **Fast:** a few milliseconds per event; CI fails the build when the slowest 5% take over 50 ms. The first event on a machine waits for a download, and nothing is recorded until it completes. [More](docs/recording.md#fast)
 
 [SECURITY.md](SECURITY.md) says what SigDek does and doesn't promise.
 
@@ -88,14 +94,18 @@ That's from a Mac with plain `npx sigdek init` hooks; with `--windows` hooks the
 
 ```mermaid
 flowchart TD
-  A["Claude Code or Cursor"] -->|hook event| B["Launcher<br/>checks the pinned SHA-256"]
-  B --> C["sigdek hook<br/>rules, answer, redact, hash chain"]
-  C --> D["Local log<br/>~/.sigdek/log"]
-  D -->|"after sigdek login"| E["ingest.sigdek.com"]
-  E --> F["Dashboard and evidence report"]
+  subgraph M["On the developer's machine"]
+    direction LR
+    A["Agent hook"] --> B["Launcher<br/>pinned SHA-256"] --> C["sigdek hook<br/>rules, redact, chain"] --> D["Local log"]
+  end
+  subgraph S["SigDek, after sigdek login"]
+    direction LR
+    E["ingest.sigdek.com"] --> F["Dashboard<br/>and reports"]
+  end
+  M --> S
 ```
 
-The agent's hook runs a small launcher, which downloads only the recorder version the project or plugin pins and refuses it unless its SHA-256 matches. The recorder applies the rules, answers the agent, strips secrets and seals the record into the machine's hash chain. A separate process uploads the log once the machine is signed in. [How it works](docs/how-it-works.md) has the details.
+The agent's hook runs a small launcher, which downloads only the recorder version the project or plugin pins and refuses it unless its SHA-256 matches. The recorder applies the rules, answers the agent, strips secrets and seals the record into the machine's hash chain. Once the machine is signed in, a separate process uploads the log; the one exception is an action that changes SigDek's own setup, whose record the hook uploads itself, waiting at most about a second. [How it works](docs/how-it-works.md) has the details.
 
 ## Getting the sigdek command
 
@@ -104,24 +114,23 @@ The agent's hook runs a small launcher, which downloads only the recorder versio
 | Where | Install |
 |---|---|
 | Any OS, with Node.js | `npm install -g sigdek` |
-| macOS and Linux, without Node.js | `curl -fsSL https://sigdek.com/install.sh \| sh`, or without curl, `wget -qO- https://sigdek.com/install.sh \| sh` (prefer curl) |
+| macOS and Linux, without Node.js | `curl -fsSL https://sigdek.com/install.sh \| sh`, or without curl, `wget -qO- https://sigdek.com/install.sh \| sh` (prefer curl: whether wget checks certificates depends on how it was built) |
 | Windows, Scoop | `scoop bucket add sigdek https://github.com/tektonsoftware/sigdek` then `scoop install sigdek` |
-| Windows, winget | `winget install TektonSoftware.SigDek`, a few days after each release |
 | Go 1.24 or later | `go install github.com/tektonsoftware/sigdek/cmd/sigdek@latest` |
 | Anything else | The binary for your platform from [GitHub releases](https://github.com/tektonsoftware/sigdek/releases), checked against `checksums.txt` |
 
-[Installing](docs/install.md) covers reading the install script first, its settings, and what each channel installs.
+winget isn't available yet: SigDek's first submission is waiting for Microsoft's review. [Installing](docs/install.md) covers reading the install script first, its settings, and what each channel installs.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `sigdek init` | Add SigDek's hooks to the current repository. `--windows` writes Cursor hooks that also run on Windows; `--remove` takes them out, and `.sigdek/` once no hooks use it. `sigdek init -h` lists every option |
-| `sigdek login` / `logout` | Connect or disconnect this machine; sign-in happens in the browser. Logout asks the server that signed it in to revoke the machine's token and says if it couldn't. Agents are still recorded after logout, on the machine only; those records upload if it signs in to the same team again, and login says how many |
-| `sigdek status` | A checklist of what is set up and working, with the next step for anything that isn't. It reads only local files |
+| `sigdek init` | Add SigDek's hooks to the current repository. `--windows` writes Cursor hooks that also run on Windows; `--remove` takes them out. `sigdek init -h` lists every option |
+| `sigdek login` / `logout` | Connect or disconnect this machine; sign-in happens in the browser. [More](docs/setup.md#commands) |
+| `sigdek status` | A checklist of what is set up and working, with the next step for anything that isn't |
 | `sigdek log` | Recent records from this machine |
 | `sigdek verify` | Check that no local record was changed or removed |
-| `sigdek flush` | Upload now (normally automatic, in the background), without waiting out a back-off |
+| `sigdek flush` | Upload now, without waiting out a back-off |
 
 ## Rules
 
@@ -153,7 +162,7 @@ Teams set rules in the dashboard. A **Flag** rule marks matching actions in the 
 
 ## Develop
 
-Go 1.24 or later, standard library only: `go test ./...`, then `go build -o sigdek ./cmd/sigdek`, and set `SIGDEK_BIN=$PWD/sigdek` to make launchers use your build instead of downloading. [Developing SigDek](docs/develop.md) has more, and how releases work.
+The recorder needs Go 1.24 or later and uses only the standard library. Run `go test ./...` and build with `go build -o sigdek ./cmd/sigdek`. [Developing SigDek](docs/develop.md) says how to make the launchers use your build, and how releases work.
 
 ## License
 
