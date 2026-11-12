@@ -93,13 +93,14 @@ Once signed in, that item reads `[x] Connected to Acme as alice@acme.example`, a
 ## How it works
 
 ```mermaid
-flowchart TD
+%%{init: {"flowchart": {"nodeSpacing": 24, "rankSpacing": 28}}}%%
+flowchart LR
   subgraph M["On the developer's machine"]
-    direction LR
+    direction TB
     A["Agent hook"] --> B["Launcher<br/>pinned SHA-256"] --> C["sigdek hook<br/>rules, redact, chain"] --> D["Local log"]
   end
   subgraph S["SigDek, after sigdek login"]
-    direction LR
+    direction TB
     E["ingest.sigdek.com"] --> F["Dashboard<br/>and reports"]
   end
   M --> S
