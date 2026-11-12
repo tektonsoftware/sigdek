@@ -2,7 +2,7 @@
 
 # Setting up SigDek
 
-There are three ways to start. Using Cursor? Pick [I use Cursor](#i-use-cursor). Otherwise pick [Our team's project](#our-teams-project) if you can change the project and want everyone who works in it recorded, or [Just me, in Claude Code](#just-me-in-claude-code) to record only yourself.
+There are three ways to set it up for real, and a way to [try it without an account](#try-it-without-an-account) first. Using Cursor? Pick [I use Cursor](#i-use-cursor). Otherwise pick [Our team's project](#our-teams-project) if you can change the project and want everyone who works in it recorded, or [Just me, in Claude Code](#just-me-in-claude-code) to record only yourself.
 
 ## Where commands go
 
@@ -168,6 +168,17 @@ Cursor on Windows runs hooks through PowerShell, and Windows PowerShell 5.1 can'
 SigDek's Cursor plugin isn't on Cursor's Marketplace yet. Until it is, Cursor users set up the project itself: follow [Our team's project](#our-teams-project), in Cursor. In Cursor, open your project's folder (File, then Open Folder), then choose Terminal, then New Terminal; it opens in the project's folder. Open the project's folder, not a folder inside it: Cursor reads SigDek's setup from the folder it opened. This records Claude Code in the project too, for everyone who works in it.
 
 If anyone uses Cursor on Windows in the project, set it up with `npx sigdek init --windows`; see [Cursor on Windows](#cursor-on-windows). [Cursor](cursor.md) has more on how SigDek and Cursor fit together, and on adding the plugin to a team marketplace.
+
+## Try it without an account
+
+The recorder works with no account and no sign-in. Records stay in a local log on your machine, and only the 12 built-in rules apply: they flag risky actions and block nothing.
+
+1. **Add the recorder**, either way: `npx sigdek init` in a project's top folder ([Our team's project](#our-teams-project), step 1, without committing), or the Claude Code plugin ([Just me, in Claude Code](#just-me-in-claude-code), step 1).
+2. **Start a new session** of Claude Code or Cursor in the project's top folder. A session that was already open when you added the hooks won't load them. The first event downloads the pinned recorder, which can take a few seconds.
+3. **Give the agent a task**, for example to read a file and run a command.
+4. **See what was recorded** with `npx sigdek log`, and check the local hash chain with `npx sigdek verify`. `npx sigdek status` shows what is set up.
+
+No record leaves the machine until you run `npx sigdek login`. To take SigDek out again, run `npx sigdek init --remove` in the project, or uninstall the plugin from `/plugin` in Claude Code.
 
 ## Did it work?
 

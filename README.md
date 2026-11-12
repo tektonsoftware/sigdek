@@ -1,13 +1,13 @@
 # <img src="plugins/claude-code/assets/icon.png" width="40" height="40" alt="" align="top"> SigDek recorder
 
-SigDek records what AI coding agents do on your team's machines (who ran which agent, which tool, the command or file, and whether it ran or was blocked) and turns that record into evidence an auditor or a customer can read.
-
-**Free and paid.** The recorder and plugins in this repository are free and open source (Apache-2.0). They record to a local log on your machine with no account, and their 12 built-in rules flag risky actions and block nothing. The team dashboard, your team's own Flag and Block rules, and evidence reports need a SigDek plan: Team is $99 a month for up to 10 people and Business $199 for up to 50, with a 14-day trial and no card. [Pricing](https://sigdek.com/pricing/)
-
 [![Latest release](https://img.shields.io/github/v/release/tektonsoftware/sigdek)](https://github.com/tektonsoftware/sigdek/releases/latest)
 [![CI on main](https://github.com/tektonsoftware/sigdek/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tektonsoftware/sigdek/actions/workflows/ci.yml?query=branch%3Amain)
 [![npm](https://img.shields.io/npm/v/sigdek)](https://www.npmjs.com/package/sigdek)
 [![License](https://img.shields.io/github/license/tektonsoftware/sigdek)](LICENSE)
+
+SigDek records what AI coding agents do on your team's machines (who ran which agent, which tool, the command or file, and whether it ran or was blocked) and turns that record into evidence an auditor or a customer can read.
+
+**Free and paid.** The recorder and plugins in this repository are free and open source (Apache-2.0). They record to a local log on your machine with no account, and their 12 built-in rules flag risky actions and block nothing. The team dashboard, your team's own Flag and Block rules, and evidence reports come with a SigDek team: Team is $99 a month for up to 10 people and Business $199 for up to 50, after a 14-day trial with no card. If a team's trial or plan ends, its records still upload and its rules still apply; making new reports and adding people need a plan again. [Pricing](https://sigdek.com/pricing/)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/activity-blocked-dark-2x.webp">
@@ -51,7 +51,7 @@ git commit -m "Record agent activity with SigDek"
 npx sigdek login
 ```
 
-If anyone uses Cursor on Windows in the project, run `npx sigdek init --windows` instead ([why](docs/setup.md#cursor-on-windows)). Then invite your team: in the dashboard, open People and choose **Invite people**. Each teammate accepts the invitation, then runs `npx sigdek login` once. Without an invitation, signing in asks them to name a new team instead. [Full steps](docs/setup.md#our-teams-project)
+If anyone uses Cursor on Windows in the project, run `npx sigdek init --windows` instead ([why](docs/setup.md#cursor-on-windows)). Then invite your team: in the dashboard, open People and choose **Invite people**. Your own first `npx sigdek login` asks you to name the team, which starts its 14-day trial. Each teammate accepts the invitation, then runs `npx sigdek login` once. Without an invitation, signing in asks them to name a new team instead. [Full steps](docs/setup.md#our-teams-project)
 
 ### I use Cursor
 
@@ -59,7 +59,7 @@ SigDek's Cursor plugin isn't on Cursor's Marketplace yet, so follow [Our team's 
 
 ### Try it without an account
 
-Run `npx sigdek init` in a project (or add the plugin), give your agent a task, then run `npx sigdek log` to see what was recorded and `npx sigdek verify` to check the local chain. Nothing leaves the machine until you sign in.
+Run `npx sigdek init` in a project (or add the plugin). Start a new Claude Code or Cursor session in the project's top folder, since a session that was already open won't load the new hooks, and give the agent a task. Then run `npx sigdek log` to see what was recorded and `npx sigdek verify` to check the local chain. No record leaves the machine until you sign in. `npx sigdek init --remove` takes the hooks out again. [Full steps](docs/setup.md#try-it-without-an-account)
 
 `npx` needs Node.js 18 or later. Without it, [get the `sigdek` command](#getting-the-sigdek-command) and type `sigdek` for `npx sigdek`.
 
@@ -84,7 +84,7 @@ Once signed in, that item reads `[x] Connected to Acme as alice@acme.example`, a
 - **Never recorded:** prompt text (only a hash and its length), file contents, command output. The stored hashes can confirm a guess at a whole input. [More](docs/recording.md#never-recorded)
 - **Secrets are stripped** from commands, paths and URLs before anything is written. It's best effort. [More](docs/recording.md#secrets-are-stripped)
 - **Tamper-evident once SigDek has received them:** a hash chain per machine, checked on every upload. The local log can be rewritten by someone with access to the machine before it uploads. [More](docs/recording.md#tamper-evident-once-sigdek-has-received-them)
-- **Never blocks by accident:** any error lets the action go ahead, and only your team's Block rules stop an action. Two exceptions: the PowerShell-only Cursor form, and Cursor's own bug that shows "Hook blocked" for its CLI on Windows started from Git Bash. [More](docs/recording.md#never-blocks-your-work-by-accident)
+- **Never blocks by accident:** any error lets the action go ahead, and only your team's Block rules stop an action. Two exceptions: the PowerShell-only Cursor form (`--powershell`) gives Cursor no answer when its launcher is missing or refused, and Cursor's own bug that shows "Hook blocked" for its CLI on Windows started from Git Bash. [More](docs/recording.md#never-blocks-your-work-by-accident)
 - **Anyone using the machine can switch recording off,** by removing the hooks, uninstalling the plugin or setting `SIGDEK_BIN`. The built-in rules flag an agent editing SigDek's setup, and the Coverage report shows a machine that goes silent; neither prevents it. [More](docs/recording.md#can-be-switched-off-by-anyone-using-the-machine)
 - **Fast:** a few milliseconds per event; CI fails the build when the slowest 5% take over 50 ms. The first event on a machine waits for a download, and nothing is recorded until it completes. [More](docs/recording.md#fast)
 
@@ -122,7 +122,7 @@ The agent's hook runs a small launcher, which downloads only the recorder versio
 | Go 1.24 or later | `go install github.com/tektonsoftware/sigdek/cmd/sigdek@latest` |
 | Anything else | The binary for your platform from [GitHub releases](https://github.com/tektonsoftware/sigdek/releases), checked against `checksums.txt` |
 
-winget isn't available yet: SigDek's first submission is waiting for Microsoft's review. [Installing](docs/install.md) covers reading the install script first, its settings, and what each channel installs.
+winget isn't available yet: SigDek's first submissions are waiting for Microsoft's review. [Installing](docs/install.md) covers reading the install script first, its settings, and what each channel installs.
 
 ## Commands
 

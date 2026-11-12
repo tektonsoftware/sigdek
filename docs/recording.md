@@ -57,7 +57,7 @@ Two waits are longer:
 
 - **The first event on each machine,** and the first after a new recorder version is pinned, waits while the launcher downloads the pinned recorder. Nothing is recorded until the download is complete and its SHA-256 checked. How long it waits depends on the launcher:
   - **`launch.sh` with curl** (macOS, Linux, and Git Bash on Windows) waits up to 8 seconds, or 6 under Git Bash on Windows. On a slower link it carries on in a background process, for up to 5 minutes, and the next event after that finds the recorder.
-  - **`launch.sh` with only wget** has no overall limit: it gives up when connecting or receiving stalls for 8 seconds. It has no background download, so a download that stalls counts as failed.
+  - **`launch.sh` with only wget** has no overall limit of its own: it gives up when connecting or receiving stalls for 8 seconds, and the agent stops the hook after 10 seconds, the timeout SigDek's hook files set. It has no background download, so a download that stalls counts as failed.
   - **`launch.ps1`** (Cursor on Windows, under PowerShell) waits up to 7 seconds from the start of each event. It keeps what arrived and asks for the rest in the following events, each waiting up to 7 seconds.
 
   After a failed download, the launcher tries again after 1, 2, 4… up to 60 minutes. A new pin in `recorder.lock` tries again at once.
