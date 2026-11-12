@@ -101,7 +101,7 @@ flowchart LR
   end
   subgraph S["SigDek, after sigdek login"]
     direction TB
-    E["ingest.sigdek.com"] --> F["Dashboard<br/>and reports"]
+    E["ingest.sigdek.com"] --> F["Dashboard, reports"]
   end
   M --> S
 ```
