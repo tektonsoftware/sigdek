@@ -101,9 +101,11 @@ flowchart LR
   end
   subgraph S["SigDek, after sigdek login"]
     direction TB
-    E["ingest.sigdek.com"] --> F["Dashboard, reports"]
+    E["ingest.sigdek.com"] --> F["Dashboard<br/>and reports"]
+    F ~~~ X[" "]
   end
   M --> S
+  style X fill:none,stroke:none
 ```
 
 The agent's hook runs a small launcher, which downloads only the recorder version the project or plugin pins and refuses it unless its SHA-256 matches. The recorder applies the rules, answers the agent, strips secrets and seals the record into the machine's hash chain. Once the machine is signed in, a separate process uploads the log; the one exception is an action that changes SigDek's own setup, whose record the hook uploads itself, waiting at most about a second. [How it works](docs/how-it-works.md) has the details.
