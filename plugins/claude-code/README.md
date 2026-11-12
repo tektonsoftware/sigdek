@@ -9,13 +9,13 @@ The plugin is free and open source (Apache-2.0) and works on its own, keeping re
 - From this repository's marketplace: `/plugin marketplace add tektonsoftware/sigdek`, then `/plugin install sigdek@sigdek`.
 - From Anthropic's plugin directory, once it's listed there: add SigDek in Customize > Plugins on claude.ai, or with `/plugin directory` in Claude Code. It loads in Claude Code as `sigdek@synced`.
 
-SigDek uses Claude Code's hooks, so it records in Claude Code (the terminal, the IDE extensions and the desktop app's Code tab). It does nothing in claude.ai chat.
+SigDek uses Claude Code's hooks, so it records in Claude Code (the terminal, the IDE extensions and the desktop app's Code tab). It records nothing in claude.ai chat, where its `/sigdek:connect` skill can load but can't run.
 
 ## Use it
 
 1. Work in Claude Code as usual. Each action is recorded once it has run, failed, been stopped by a Block rule or been refused by auto mode. An action you decline at the permission prompt leaves no record, because Claude Code runs no hook after a decline.
 2. Install the `sigdek` command (https://sigdek.com/docs/#command). Read this machine's records with `sigdek log`, and check that none was changed with `sigdek verify`.
-3. To connect the machine to your team, run `sigdek login` in a terminal (`npx sigdek login` without the command installed) and approve the code in your browser. From SigDek 0.1.1 (the plugin update), you can type `/sigdek:connect` in Claude Code's chat instead.
+3. To connect the machine to your team, run `sigdek login` in a terminal (`npx sigdek login` without the command installed) and approve the code in your browser. Or type `/sigdek:connect` in Claude Code's chat instead.
 
 ## Try it
 
@@ -26,9 +26,9 @@ SigDek uses Claude Code's hooks, so it records in Claude Code (the terminal, the
 ## What it runs, downloads, writes and sends
 
 - **Runs:** on Claude Code's `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied`, `SubagentStart`, `SubagentStop`, `Stop` and `ConfigChange` hooks, `scripts/launch.sh`, which runs the SigDek recorder. The hook always exits 0. It stops an action only when one of your team's Block rules matches.
-- **Downloads:** on first use, the recorder binary for your platform from this repository's GitHub releases (github.com/tektonsoftware/sigdek/releases). It downloads only the version pinned in `scripts/recorder.lock`, and refuses the file unless its SHA-256 matches the one there. It's kept in the plugin's data folder. That first event waits up to a few seconds for the download. If the download fails, the launcher waits 1, 2, 4… up to 60 minutes before trying again, and records nothing in the meantime. The recorder's source is in the same repository (`cmd/`, `internal/`) and uses only Go's standard library.
+- **Downloads:** on first use, the recorder binary for your platform from this repository's GitHub releases (github.com/tektonsoftware/sigdek/releases). It downloads only the version pinned in `scripts/recorder.lock`, and refuses the file unless its SHA-256 matches the one there. It's kept in the plugin's data folder. That first event waits up to 8 seconds for the download (6 on Windows). On a slower link, the launcher finishes it in a separate background process that keeps running after the hook ends, for up to 5 minutes, and records nothing until the download is done. If the download fails, the launcher waits 1, 2, 4… up to 60 minutes before trying again, and records nothing in the meantime. The recorder's source is in the same repository (`cmd/`, `internal/`) and uses only Go's standard library.
 - **Writes:** records to `~/.sigdek/log/` (one file per month), errors to `~/.sigdek/errors.log`, and the machine's settings and your team's rules to `~/.sigdek`. The local log isn't trimmed; delete `~/.sigdek` to remove it.
-- **Sends:** nothing until you connect the machine with `sigdek login` (or, from SigDek 0.1.1, `/sigdek:connect`).
+- **Sends:** nothing until you connect the machine with `sigdek login` (or `/sigdek:connect`).
   - Sign-in happens in your browser at app.sigdek.com.
   - After that, records go over HTTPS to ingest.sigdek.com, run by Tekton Software. They're sent by a separate background process when the agent finishes each turn, when the session ends, and at most once a minute during a long turn, and each upload brings back your team's rules.
   - One exception: an action that changes SigDek's own setup (deleting `.sigdek`, `sigdek logout`, editing the hook files) is recorded as attempted, and the hook uploads that record before the action runs, waiting at most about a second; if that upload doesn't finish in time, the background upload takes over.
@@ -48,9 +48,9 @@ Secrets (cloud keys, tokens, passwords in URLs and flags, private keys) are stri
 - Files attached to a prompt with @ aren't recorded.
 - On Windows, Claude Code runs hooks through Git Bash. Without Git Bash it uses PowerShell, where SigDek records nothing (and blocks nothing).
 - In a repository set up with `sigdek init`, the plugin's hooks step aside in sessions started at the repository's root, so nothing is recorded twice.
-- From SigDek 0.1.1 (the plugin update): `/sigdek:connect` asks Claude to run the plugin's own `sigdek login` in the background and to show you its link and code. It lets Claude run only that command, and read only files in Claude Code's temporary folder on macOS and Linux (`/tmp/claude-…`), where that command's output goes, without asking you. Elsewhere, Claude Code may ask before Claude reads the output. It needs `sh`, so on Windows without Git Bash, run `npx sigdek login` in a terminal instead.
+- `/sigdek:connect` asks Claude to run the plugin's own `sigdek login` in the background and to show you its link and code. It lets Claude run only that command, and read only files in Claude Code's temporary folder on macOS and Linux (`/tmp/claude-…`), where that command's output goes, without asking you. Elsewhere, Claude Code may ask before Claude reads the output. It needs `sh`, so on Windows without Git Bash, run `npx sigdek login` in a terminal instead.
 - Cursor can run Claude Code's hooks too. When Cursor sends an event to SigDek's Claude Code hook, the recorder stands aside, so Cursor's actions are recorded only by SigDek's Cursor plugin or a repository's Cursor hooks, never as Claude Code.
-- Recording adds a few milliseconds per action; CI fails the build above 50 ms.
+- Recording adds a few milliseconds per action; CI fails the build when the slowest 5% of hook runs take over 50 ms (120 ms on Windows).
 
 ## Privacy, terms and support
 
