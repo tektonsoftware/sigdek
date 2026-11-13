@@ -17,12 +17,13 @@ SigDek records what AI coding agents do on your team's machines (who ran which a
 ## Quick start
 
 ```sh
-npx sigdek init     # in your project's top folder: sets up Claude Code and Cursor
-                    # then start a new Claude Code or Cursor session there
-npx sigdek login    # connect this machine to your team
+# in your project's top folder
+npx sigdek init
+# start a new agent session there
+npx sigdek login
 ```
 
-- Needs Node.js 18 or later.
+- `init` sets up Claude Code and Cursor, and `login` connects this machine to your team. Needs Node.js 18 or later.
 - **No account?** Skip `login`. Records stay on your machine: `npx sigdek log` shows them and `npx sigdek verify` checks the chain.
 - **Or the Claude Code plugin** (in Claude Code in a terminal, no change to the repository): `/plugin marketplace add tektonsoftware/sigdek`, `/plugin install sigdek@sigdek`, then `/sigdek:connect`.
 - **Did it work?** `npx sigdek status`. The [setup guide](docs/setup.md) covers a team, taking it out, and fixes.
@@ -38,11 +39,10 @@ npx sigdek login    # connect this machine to your team
 
 ## Docs
 
-- [Setup guide](docs/setup.md) and [commands](docs/commands.md)
+- [Setup guide](docs/setup.md), [commands](docs/commands.md), [Cursor](docs/cursor.md) and [Windows](docs/windows.md)
 - [What it records, and what it never does](docs/recording.md), [rules](docs/rules.md) and [how it works](docs/how-it-works.md)
 - [What SigDek can't guarantee](SECURITY.md), and how to report a vulnerability
-- [Cursor](docs/cursor.md), [Windows](docs/windows.md) and [developing SigDek](docs/develop.md)
-- [sigdek.com/docs](https://sigdek.com/docs/): the hosted service
+- [Developing SigDek](docs/develop.md), and [sigdek.com/docs](https://sigdek.com/docs/) for the hosted service
 
 ## License
 
