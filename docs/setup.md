@@ -46,7 +46,7 @@ Start a new Claude Code or Cursor session in the project's top folder, and work 
 
 ## Did it work?
 
-`npx sigdek status` prints a checklist. After the agent's first few actions, before signing in, the checklist reads:
+`npx sigdek status` prints a checklist. Without an account, after the agent's first few actions, it reads:
 
 ```
 [x] Claude Code records in this project, through its hooks in .claude/settings.json
@@ -58,7 +58,7 @@ Start a new Claude Code or Cursor session in the project's top folder, and work 
     Next: run `npx sigdek login`.
 ```
 
-`[ ]` marks something missing, with the next step under it. Once signed in, what an agent does from then on shows on the Activity page at [app.sigdek.com](https://app.sigdek.com) when it finishes its turn. [Commands](commands.md#what-status-shows) has the rest of the output, and every `sigdek` command.
+`[ ]` marks something missing, with the next step under it. Signed in, that item becomes `[x] Connected to Acme as alice@acme.example`, and what an agent does from then on shows on the Activity page at [app.sigdek.com](https://app.sigdek.com) when it finishes its turn. [Commands](commands.md#what-status-shows) has the rest of the output, and every `sigdek` command.
 
 ## A team
 
@@ -66,7 +66,7 @@ Commit the files `init` lists, so everyone who pulls the project is set up. In t
 
 ## Or the Claude Code plugin
 
-It records you in every project you open in Claude Code on this machine and, installed for you, changes no repository. In Claude Code in a terminal, choosing **Install for you (user scope)** when asked (for VS Code and the desktop app, see [The Claude Code plugin](commands.md#the-claude-code-plugin)):
+It records you in every project you open in Claude Code on this machine and, installed for you, changes no repository. Run these in Claude Code in a terminal, and choose **Install for you (user scope)** when asked (for VS Code and the desktop app, see [The Claude Code plugin](commands.md#the-claude-code-plugin)):
 
 ```
 /plugin marketplace add tektonsoftware/sigdek
@@ -83,8 +83,8 @@ Run `npx sigdek init --remove` and commit the change. Uninstall the plugin from 
 | What you see | What to do |
 |---|---|
 | `running scripts is disabled on this system` (PowerShell) | Type `npx.cmd` for `npx`. |
-| `/plugin isn't available in this environment` | The `/plugin` commands are for Claude Code in a terminal. See [The Claude Code plugin](commands.md#the-claude-code-plugin). |
-| `/plugin` or `/sigdek:connect` isn't a known command | Run `/reload-plugins`, or update Claude Code (`claude update`). Or run `npx sigdek login` in a terminal. |
+| `/plugin` says it `isn't available in this environment` | The `/plugin` commands are for Claude Code in a terminal. See [The Claude Code plugin](commands.md#the-claude-code-plugin). |
+| `/plugin` or `/sigdek:connect` isn't a known command | For `/plugin`, update Claude Code (`claude update`). For `/sigdek:connect`, run `/reload-plugins`. Or run `npx sigdek login` in a terminal. |
 | `/sigdek:connect` says the recorder is still downloading | Run it again a little later, or run `npx sigdek login`. |
 | Nothing is recorded, or nothing shows in Activity | Start a new session in the project's top folder, not a subfolder. Records upload when the agent finishes its turn, and only those made after the machine's first sign-in. `npx sigdek status` says what's missing. |
 | Cursor on Windows records nothing | Run `npx sigdek init --windows` and commit the change. It hasn't been tried in the Cursor app on Windows yet. [Windows](windows.md) |
