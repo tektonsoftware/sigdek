@@ -4,7 +4,7 @@
 
 ## Recording Cursor
 
-Cursor is recorded through SigDek's Cursor hooks: those `sigdek init` writes in a repository's `.cursor/hooks.json`, or those of SigDek's Cursor plugin. To set up a project, follow [I use Cursor](setup.md#i-use-cursor).
+Cursor is recorded through SigDek's Cursor hooks: those `sigdek init` writes in a repository's `.cursor/hooks.json`, or those of SigDek's Cursor plugin. To set up a project, follow the [setup guide](setup.md).
 
 Cursor reads `.cursor/hooks.json` from the workspace root, so open the project's top folder in Cursor, not a folder inside it.
 
