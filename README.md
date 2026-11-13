@@ -5,7 +5,7 @@
 [![npm](https://img.shields.io/npm/v/sigdek)](https://www.npmjs.com/package/sigdek)
 [![License](https://img.shields.io/github/license/tektonsoftware/sigdek)](LICENSE)
 
-SigDek records what AI coding agents do on your team's machines (who ran which agent, which tool, the command or file, and whether it ran or was blocked) and turns that record into evidence an auditor or a customer can read. It never records prompt text, file contents or command output.
+SigDek records what AI coding agents do on your team's machines (who ran which agent, which tool, the command or file, and whether it ran or was blocked) and turns that record into evidence an auditor or a customer can read. It [never records](docs/recording.md#never-recorded) prompt text, file contents or command output.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/activity-blocked-dark-2x.webp">
@@ -17,21 +17,21 @@ SigDek records what AI coding agents do on your team's machines (who ran which a
 ## Quick start
 
 ```sh
-# in your project's top folder
+# in the repo's top folder
 npx sigdek init
-# start a new agent session there
 npx sigdek login
+# then start a new session
 ```
 
-- `init` sets up Claude Code and Cursor, and `login` connects this machine to your team. Needs Node.js 18 or later.
-- **No account?** Skip `login`. Records stay on your machine: `npx sigdek log` shows them and `npx sigdek verify` checks the chain.
-- **Or the Claude Code plugin** (in Claude Code in a terminal, no change to the repository): `/plugin marketplace add tektonsoftware/sigdek`, `/plugin install sigdek@sigdek`, then `/sigdek:connect`.
+- `init` sets up Claude Code and Cursor in a git repository, and `login` connects this machine to your team. Then start a new Claude Code or Cursor session there. Needs Node.js 18 or later.
+- **No account?** Skip `login`. Records stay on your machine: `npx sigdek log` shows them and `npx sigdek verify` checks their hash chain. If you sign in later, only what agents do after that uploads.
+- **Or the Claude Code plugin** (in Claude Code in a terminal; installed for you, it changes no repository): `/plugin marketplace add tektonsoftware/sigdek`, `/plugin install sigdek@sigdek`, then `/sigdek:connect`.
 - **Did it work?** `npx sigdek status`. The [setup guide](docs/setup.md) covers a team, taking it out, and fixes.
 
 ## Free and paid
 
 - **Free:** the recorder in this repository is open source (Apache-2.0). It records to a local log on your machine, with no account.
-- **Paid:** the dashboard, your team's own Flag and Block rules, and reports come with a SigDek team. Team is $99 a month for up to 10 people and Business $199 for up to 50, after a 14-day trial with no card. [Pricing](https://sigdek.com/pricing/)
+- **Paid:** the dashboard, your team's own Flag and Block rules, and reports come with a SigDek team. The Team plan is $99 a month for up to 10 people and Business $199 for up to 50, after a 14-day trial with no card. [Pricing](https://sigdek.com/pricing/)
 
 ## Getting the sigdek command
 

@@ -2,7 +2,7 @@
 
 # Setting up SigDek
 
-Needs Node.js 18 or later. Or [install the `sigdek` command](install.md) and type `sigdek` for `npx sigdek`.
+Needs Node.js 18 or later and a git repository. Or [install the `sigdek` command](install.md) and type `sigdek` for `npx sigdek`.
 
 ## 1. Set it up in the project's top folder
 
@@ -10,7 +10,7 @@ Needs Node.js 18 or later. Or [install the `sigdek` command](install.md) and typ
 npx sigdek init
 ```
 
-You should see this on macOS or Linux. For Cursor on Windows, run `npx sigdek init --windows` instead ([Windows](windows.md) says why):
+You should see this on macOS or Linux. For Cursor on Windows, run `npx sigdek init --windows` instead; it hasn't been tried in the Cursor app on Windows yet ([Windows](windows.md)):
 
 ```
 SigDek is set up in this repository. Commit these files:
@@ -28,11 +28,7 @@ project, run `npx sigdek init --windows` before you commit: its hooks work there
 Next: run `npx sigdek login` to connect this machine to your team. Until then, records stay on this machine.
 ```
 
-## 2. Start a new session
-
-Start a new Claude Code or Cursor session in the project's top folder, and work as usual. A session that was already open may not have picked up the new hooks.
-
-## 3. Connect the machine
+## 2. Connect the machine
 
 ```
 npx sigdek login
@@ -42,7 +38,11 @@ Approve the code in your browser. You should see `Signed in as alice@acme.exampl
 
 If you aren't in a team yet, signing in asks you to name a new one, which starts a 14-day trial with no card. To join a team that already uses SigDek, accept its invitation first.
 
-**No account?** Skip `login`. Records stay on your machine: `npx sigdek log` shows them and `npx sigdek verify` checks the chain.
+**No account?** Skip this step. Records stay on your machine: `npx sigdek log` shows them and `npx sigdek verify` checks their hash chain. If you sign in later, the records made before that stay on the machine, and `login` says how many.
+
+## 3. Start a new session
+
+Start a new Claude Code or Cursor session in the project's top folder, and work as usual. A session that was already open may not have picked up the new hooks.
 
 ## Did it work?
 
@@ -58,7 +58,7 @@ If you aren't in a team yet, signing in asks you to name a new one, which starts
     Next: run `npx sigdek login`.
 ```
 
-`[ ]` marks something missing, with the next step under it. Once signed in, what an agent did shows on the Activity page at [app.sigdek.com](https://app.sigdek.com) when it finishes its turn. [Commands](commands.md#what-status-shows) has the rest of the output, and every `sigdek` command.
+`[ ]` marks something missing, with the next step under it. Once signed in, what an agent does from then on shows on the Activity page at [app.sigdek.com](https://app.sigdek.com) when it finishes its turn. [Commands](commands.md#what-status-shows) has the rest of the output, and every `sigdek` command.
 
 ## A team
 
@@ -66,7 +66,7 @@ Commit the files `init` lists, so everyone who pulls the project is set up. In t
 
 ## Or the Claude Code plugin
 
-It changes no repository, and records you in every project you open in Claude Code on this machine. In Claude Code in a terminal (for VS Code and the desktop app, see [The Claude Code plugin](commands.md#the-claude-code-plugin)):
+It records you in every project you open in Claude Code on this machine and, installed for you, changes no repository. In Claude Code in a terminal, choosing **Install for you (user scope)** when asked (for VS Code and the desktop app, see [The Claude Code plugin](commands.md#the-claude-code-plugin)):
 
 ```
 /plugin marketplace add tektonsoftware/sigdek
@@ -76,7 +76,7 @@ It changes no repository, and records you in every project you open in Claude Co
 
 ## Take it out
 
-Run `npx sigdek init --remove` and commit the change. Uninstall the plugin from `/plugin` in Claude Code.
+Run `npx sigdek init --remove` and commit the change. Uninstall the plugin from `/plugin` in Claude Code. To disconnect the machine, run `npx sigdek logout`; its local log stays in `~/.sigdek` until you delete it.
 
 ## If something goes wrong
 
@@ -84,7 +84,8 @@ Run `npx sigdek init --remove` and commit the change. Uninstall the plugin from 
 |---|---|
 | `running scripts is disabled on this system` (PowerShell) | Type `npx.cmd` for `npx`. |
 | `/plugin isn't available in this environment` | The `/plugin` commands are for Claude Code in a terminal. See [The Claude Code plugin](commands.md#the-claude-code-plugin). |
+| `/plugin` or `/sigdek:connect` isn't a known command | Run `/reload-plugins`, or update Claude Code (`claude update`). Or run `npx sigdek login` in a terminal. |
 | `/sigdek:connect` says the recorder is still downloading | Run it again a little later, or run `npx sigdek login`. |
-| Nothing is recorded, or nothing shows in Activity | Start a new session in the project's top folder, not a subfolder. Records upload when the agent finishes its turn. `npx sigdek status` says what's missing. |
-| Cursor on Windows records nothing | Run `npx sigdek init --windows` and commit the change. [Windows](windows.md) |
+| Nothing is recorded, or nothing shows in Activity | Start a new session in the project's top folder, not a subfolder. Records upload when the agent finishes its turn, and only those made after the machine's first sign-in. `npx sigdek status` says what's missing. |
+| Cursor on Windows records nothing | Run `npx sigdek init --windows` and commit the change. It hasn't been tried in the Cursor app on Windows yet. [Windows](windows.md) |
 | Claude Code on Windows records nothing | It needs Git for Windows. [Windows](windows.md) |
