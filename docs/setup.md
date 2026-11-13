@@ -62,7 +62,7 @@ Start a new Claude Code or Cursor session in the project's top folder, and work 
 
 ## A team
 
-Commit the files `init` lists, so everyone who pulls the project is set up. In the dashboard, an owner or admin opens People and chooses **Invite people**. Each person accepts, then runs `npx sigdek login`.
+Commit the files `init` lists, so everyone who pulls the project is set up. In the dashboard, an owner or admin invites people under Settings, Members. Each person accepts, then runs `npx sigdek login`.
 
 ## Or the Claude Code plugin
 
