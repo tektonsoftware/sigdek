@@ -4,10 +4,10 @@
 
 Needs Node.js 18 or later. Or [install the `sigdek` command](install.md) and type `sigdek` for `npx sigdek`.
 
-## 1. Add it to the project
+## 1. Set it up in the project's top folder
 
 ```
-npx sigdek init     # in your project's top folder
+npx sigdek init
 ```
 
 You should see this on macOS or Linux. For Cursor on Windows, run `npx sigdek init --windows` instead ([Windows](windows.md) says why):
@@ -85,6 +85,6 @@ Run `npx sigdek init --remove` and commit the change. Uninstall the plugin from 
 | `running scripts is disabled on this system` (PowerShell) | Type `npx.cmd` for `npx`. |
 | `/plugin isn't available in this environment` | The `/plugin` commands are for Claude Code in a terminal. See [The Claude Code plugin](commands.md#the-claude-code-plugin). |
 | `/sigdek:connect` says the recorder is still downloading | Run it again a little later, or run `npx sigdek login`. |
-| Nothing is recorded, or nothing shows in Activity | Start a new session in the project's top folder: a session started in a subfolder doesn't run the project's hooks. Records upload when the agent finishes its turn. Then `npx sigdek status` says what's missing. |
+| Nothing is recorded, or nothing shows in Activity | Start a new session in the project's top folder, not a subfolder. Records upload when the agent finishes its turn. `npx sigdek status` says what's missing. |
 | Cursor on Windows records nothing | Run `npx sigdek init --windows` and commit the change. [Windows](windows.md) |
 | Claude Code on Windows records nothing | It needs Git for Windows. [Windows](windows.md) |
