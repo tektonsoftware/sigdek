@@ -2,6 +2,22 @@
 
 # How it works
 
+```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 24, "rankSpacing": 28}}}%%
+flowchart LR
+  subgraph M["On the developer's machine"]
+    direction TB
+    A["Agent hook"] --> B["Launcher<br/>pinned SHA-256"] --> C["sigdek hook<br/>rules, redact, chain"] --> D["Local log"]
+  end
+  subgraph S["SigDek, after sigdek login"]
+    direction TB
+    E["ingest.sigdek.com"] --> F["Dashboard<br/>and reports"]
+    F ~~~ X[" "]
+  end
+  M --> S
+  style X fill:none,stroke:none
+```
+
 ## From hook to upload
 
 ```
@@ -42,6 +58,14 @@ Only hook events step aside. A command you run through the plugin, such as `/sig
 A hook command never stops the agent on its own: when the launcher is missing or broken (a branch made before SigDek was added, `.sigdek` deleted or ignored by git, merge-conflict markers in `launch.sh`, an empty file), the command does nothing but give Cursor the answer it expects, and that checkout records nothing until the launcher is back. The PowerShell-only Cursor form, `sigdek init --powershell`, is the exception: with launch.ps1 missing, empty or broken, it gives Cursor no answer.
 
 `sigdek init` warns when git ignores any file it wrote. `sigdek status` says when `.sigdek/launch.sh` is missing, and, in a repository set up by an older version, asks you to run `sigdek init` again for these commands.
+
+## The hosted service
+
+Once a machine is signed in, the hosted service at [sigdek.com](https://sigdek.com) (paid) turns its records into a team dashboard and an evidence report. Anyone can check at [app.sigdek.com/verify](https://app.sigdek.com/verify) that a report's PDF or CSV came from SigDek and hasn't changed since.
+
+<img src="images/report-top-2x.webp" width="600" alt="The top of the first page of SigDek's sample report: Acme, 1 July to 30 September 2026. Between 1 July and 30 September 2026, 12 people at Acme ran AI coding agents in 1,571 sessions across 4 repositories. Rules blocked 2 of 182 sensitive actions. One silent stretch was found.">
+
+If a team's trial or plan ends, its records still upload and its rules still apply; making new reports and adding people need a plan again. [Pricing](https://sigdek.com/pricing/) and [sigdek.com/docs](https://sigdek.com/docs/) have more.
 
 ## Cursor and Windows
 

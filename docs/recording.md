@@ -16,6 +16,8 @@ Events that arrive but can't be recorded are listed in `~/.sigdek/errors.log`.
 
 Prompt text (only a hash and its length), file contents, command output.
 
+A shell command is recorded as the agent sent it, up to 4 KB and with secrets stripped. So text an agent writes inside a command, such as a heredoc, an `echo` or a commit message, is in the record.
+
 The full tool input is kept only as a SHA-256 hash of the input exactly as the agent sent it. Like the prompt hash, it can confirm a guess at the whole input, a file edit's contents included. When a secret was stripped from the action's command, path or URL, the hash is instead of the stored, redacted action (the RFC 8785 canonical JSON of its `kind`, `name`, `command`, `path` and `url`), so it can't confirm a guessed secret; a nonzero `redactions` count in the record says it holds this form. [SECURITY.md](../SECURITY.md) has the details.
 
 ## Secrets are stripped
