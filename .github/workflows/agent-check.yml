@@ -1,0 +1,208 @@
+name: agent-check
+
+# Runs the released SigDek recorder under the newest Claude Code and Cursor agent, in a real
+# session (scripts/agent-check/run.sh), so a vendor release that stops SigDek recording or
+# blocking is found the day it ships. Daily, but each job only runs when something changed: a new
+# agent version, a new SigDek release, or a change to the plugin, these scripts or this file.
+# Mondays and manual runs check regardless. A failed scheduled run opens (or comments on) one
+# issue per agent.
+#
+# Nothing leaves the runner: the recorder is never signed in, and the Block rule is a cached rule
+# set in a scratch SIGDEK_HOME. Secrets: ANTHROPIC_API_KEY (Claude Code, Haiku, at most $0.25 a
+# session) and CURSOR_API_KEY (Cursor's agent). Each session stops after 10 minutes.
+#
+# The Cursor job runs on schedule only once the repository variable AGENT_CHECK_CURSOR is "on"
+# (set it after a manual run passes); until then, only manual runs try it.
+on:
+  schedule:
+    - cron: "17 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: agent-check
+  cancel-in-progress: false
+
+jobs:
+  claude-code:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.v.outputs.agent }}
+      sigdek: ${{ steps.v.outputs.sigdek }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+      - name: Newest versions
+        id: v
+        run: |
+          agent=$(npm view @anthropic-ai/claude-code version | tr -cd 'A-Za-z0-9._-')
+          sigdek=$(npm view sigdek version | tr -cd 'A-Za-z0-9._-')
+          [ -n "$agent" ] && [ -n "$sigdek" ] || { echo "::error::npm didn't give the newest versions"; exit 1; }
+          echo "agent=$agent" >>"$GITHUB_OUTPUT"
+          echo "sigdek=$sigdek" >>"$GITHUB_OUTPUT"
+      - name: Already passed with these versions?
+        id: seen
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .agent-check-passed
+          key: agent-check-claude-code-${{ steps.v.outputs.agent }}-sigdek-${{ steps.v.outputs.sigdek }}-${{ hashFiles('plugins/claude-code/**', 'scripts/agent-check/**', '.github/workflows/agent-check.yml') }}
+          lookup-only: true
+      - name: Decide
+        id: go
+        env:
+          HIT: ${{ steps.seen.outputs.cache-hit }}
+          EVENT: ${{ github.event_name }}
+          AGENT: ${{ steps.v.outputs.agent }}
+          SIGDEK: ${{ steps.v.outputs.sigdek }}
+        run: |
+          if [ "$HIT" != true ] || [ "$(date -u +%u)" = 1 ] || [ "$EVENT" = workflow_dispatch ]; then
+            echo "run=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "Claude Code $AGENT with SigDek $SIGDEK already passed; nothing to check."
+          fi
+      - name: Install Claude Code
+        id: install
+        if: steps.go.outputs.run
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AGENT: ${{ steps.v.outputs.agent }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::The ANTHROPIC_API_KEY secret isn't set, so Claude Code can't run. Set it with: gh secret set ANTHROPIC_API_KEY --repo tektonsoftware/sigdek"
+            exit 1
+          fi
+          npm install -g "@anthropic-ai/claude-code@$AGENT"
+          claude --version
+      - name: The plugin passes Claude Code's own validation
+        if: steps.install.outcome == 'success'
+        run: claude plugin validate --strict ./plugins/claude-code
+      - name: Records and blocks with `sigdek init`'s hooks
+        if: steps.install.outcome == 'success' && !cancelled()
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SIGDEK_CHECK_WORK: ${{ runner.temp }}/agent-check
+        run: scripts/agent-check/run.sh init
+      - name: Records and blocks with the plugin
+        if: steps.install.outcome == 'success' && !cancelled()
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SIGDEK_CHECK_WORK: ${{ runner.temp }}/agent-check
+        run: scripts/agent-check/run.sh plugin
+      - name: Remember that these versions passed
+        if: steps.go.outputs.run && success()
+        run: mkdir -p .agent-check-passed && date -u >.agent-check-passed/at
+      - if: steps.go.outputs.run && success() && steps.seen.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .agent-check-passed
+          key: agent-check-claude-code-${{ steps.v.outputs.agent }}-sigdek-${{ steps.v.outputs.sigdek }}-${{ hashFiles('plugins/claude-code/**', 'scripts/agent-check/**', '.github/workflows/agent-check.yml') }}
+
+  cursor:
+    if: github.event_name == 'workflow_dispatch' || vars.AGENT_CHECK_CURSOR == 'on'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.v.outputs.agent }}
+      sigdek: ${{ steps.v.outputs.sigdek }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+      - name: Install Cursor's agent (its own installer, from cursor.com)
+        id: v
+        run: |
+          curl -fsS https://cursor.com/install | bash
+          echo "$HOME/.local/bin" >>"$GITHUB_PATH"
+          agent=$("$HOME/.local/bin/agent" --version | tr -cd 'A-Za-z0-9._-')
+          sigdek=$(npm view sigdek version | tr -cd 'A-Za-z0-9._-')
+          [ -n "$agent" ] && [ -n "$sigdek" ] || { echo "::error::couldn't read the agent's or SigDek's version"; exit 1; }
+          echo "agent=$agent" >>"$GITHUB_OUTPUT"
+          echo "sigdek=$sigdek" >>"$GITHUB_OUTPUT"
+      - name: Already passed with these versions?
+        id: seen
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .agent-check-passed
+          key: agent-check-cursor-${{ steps.v.outputs.agent }}-sigdek-${{ steps.v.outputs.sigdek }}-${{ hashFiles('scripts/agent-check/**', '.github/workflows/agent-check.yml') }}
+          lookup-only: true
+      - name: Decide
+        id: go
+        env:
+          HIT: ${{ steps.seen.outputs.cache-hit }}
+          EVENT: ${{ github.event_name }}
+          AGENT: ${{ steps.v.outputs.agent }}
+          SIGDEK: ${{ steps.v.outputs.sigdek }}
+        run: |
+          if [ "$HIT" != true ] || [ "$(date -u +%u)" = 1 ] || [ "$EVENT" = workflow_dispatch ]; then
+            echo "run=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "Cursor's agent $AGENT with SigDek $SIGDEK already passed; nothing to check."
+          fi
+      - name: Records and blocks with `sigdek init`'s hooks
+        if: steps.go.outputs.run
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          SIGDEK_CHECK_CURSOR_MODEL: ${{ vars.AGENT_CHECK_CURSOR_MODEL }}
+          SIGDEK_CHECK_WORK: ${{ runner.temp }}/agent-check
+        run: |
+          if [ -z "$CURSOR_API_KEY" ]; then
+            echo "::error::The CURSOR_API_KEY secret isn't set, so Cursor's agent can't run. Set it with: gh secret set CURSOR_API_KEY --repo tektonsoftware/sigdek"
+            exit 1
+          fi
+          scripts/agent-check/run.sh cursor
+      - name: Remember that these versions passed
+        if: steps.go.outputs.run && success()
+        run: mkdir -p .agent-check-passed && date -u >.agent-check-passed/at
+      - if: steps.go.outputs.run && success() && steps.seen.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .agent-check-passed
+          key: agent-check-cursor-${{ steps.v.outputs.agent }}-sigdek-${{ steps.v.outputs.sigdek }}-${{ hashFiles('scripts/agent-check/**', '.github/workflows/agent-check.yml') }}
+
+  report:
+    needs: [claude-code, cursor]
+    # A job stopped by its time limit counts as cancelled, so that opens an issue too.
+    if: always() && github.event_name == 'schedule' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update one issue per agent
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CC: ${{ needs.claude-code.result }}
+          CC_V: ${{ needs.claude-code.outputs.version }}
+          CU: ${{ needs.cursor.result }}
+          CU_V: ${{ needs.cursor.outputs.version }}
+          SIGDEK_V: ${{ needs.claude-code.outputs.sigdek || needs.cursor.outputs.sigdek }}
+        run: |
+          report() { # agent name, its version, the job's result
+            case "$3" in failure | cancelled) ;; *) return 0 ;; esac
+            title="Release check failed: $1"
+            body=$(printf 'The daily check of the released recorder (SigDek %s) under %s %s ended: %s.\n\nRun: %s\n\nThe run'"'"'s log lists each check. Rerun it from the Actions tab once fixed; this issue stays open until closed by hand.' \
+              "${SIGDEK_V:-?}" "$1" "${2:-?}" "$3" "$RUN")
+            n=$(gh issue list --repo "$REPO" --state open --search "in:title \"$title\"" --json number,title --jq "map(select(.title == \"$title\"))[0].number // empty")
+            if [ -n "$n" ]; then
+              gh issue comment "$n" --repo "$REPO" --body "$body"
+            else
+              gh issue create --repo "$REPO" --title "$title" --body "$body"
+            fi
+          }
+          report "Claude Code" "$CC_V" "$CC"
+          report "Cursor's agent" "$CU_V" "$CU"
