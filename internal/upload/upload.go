@@ -52,7 +52,23 @@ type Response struct {
 	Invalid     int        `json:"invalid"` // records the server refused as malformed; they show as breaks
 	Rules       *rules.Set `json:"rules,omitempty"`
 
-	unread error // a 200 whose body couldn't be read; the batch still counts as accepted
+	unread error // ingest's answer said how many it accepted, but the rest couldn't be read
+}
+
+// UnexpectedAnswer is a 200 whose body isn't ingest's answer (an object with "accepted"): a
+// proxy's warning or sign-in page, or an empty body. The batch doesn't count as sent, so it
+// is sent again later; the server counts any record it already has as a duplicate (BB-NET-1).
+type UnexpectedAnswer struct {
+	Status      int
+	ContentType string
+}
+
+func (e *UnexpectedAnswer) Error() string {
+	ct := e.ContentType
+	if ct == "" {
+		ct = "no content type"
+	}
+	return fmt.Sprintf("the answer to the upload (HTTP %d, %s) wasn't SigDek's; a proxy or captive portal may be in the way. The records stay on this machine and are sent again next time", e.Status, ct)
 }
 
 type Summary struct {
@@ -198,9 +214,7 @@ func FlushWith(home, userAgent string, o Options) (Summary, error) {
 			return sum, ErrPaused
 		}
 	}
-	if o.Client == nil {
-		o.Client = &http.Client{Timeout: 30 * time.Second}
-	}
+	o.Client = apierr.NoRedirects(o.Client, 30*time.Second)
 	u := &uploader{ctx: ctx, home: home, dev: dev, ua: userAgent, o: o, st: store.New(home), sum: &sum, health: LoadHealth(home)}
 	u.health.LastTry = o.Now()
 	defer func() { saveHealth(home, u.health) }()
@@ -269,7 +283,7 @@ func (u *uploader) sendAll(batch []store.Line) error {
 	}
 	_ = os.Remove(config.TokenRejected(u.home))
 	if resp.unread != nil {
-		u.o.Log(fmt.Errorf("upload: the server accepted %d records, but its answer couldn't be read (%v); the team's rules weren't updated", len(batch), resp.unread))
+		u.o.Log(fmt.Errorf("upload: the server's answer says it accepted %d of %d records, but the rest of it couldn't be read (%v); the team's rules weren't updated", resp.Accepted, len(batch), resp.unread))
 	}
 	if resp.Rules != nil {
 		u.useRules(*resp.Rules)
@@ -331,13 +345,16 @@ func (u *uploader) failed(err error) error {
 	u.health.LastError = err.Error()
 	var api *apierr.Error
 	var ra *retryAfter
+	var odd *UnexpectedAnswer
 	switch {
 	case errors.Is(err, ErrRevoked):
 		// Remembered so `sigdek status` stops saying "Signed in" as if all were well, and so
 		// hooks retry only hourly (the marker's age).
 		_ = os.MkdirAll(config.StateDir(u.home), 0o700)
 		_ = os.WriteFile(config.TokenRejected(u.home), []byte(now.UTC().Format(time.RFC3339)+"\n"), 0o600)
-	case errors.As(err, &api) && api.Status >= 400:
+	case errors.As(err, &api) && api.Status >= 300, errors.As(err, &odd):
+		// Server errors and rate limits, and also redirects and answers that aren't ingest's,
+		// which a proxy may give every time.
 		u.health.Fails++
 		wait := time.Minute << min(u.health.Fails-1, 6)
 		if errors.As(err, &ra) && ra.wait > 0 {
@@ -408,13 +425,60 @@ func send(ctx context.Context, client *http.Client, dev config.Device, userAgent
 		e := apierr.New(req.URL.String(), res.StatusCode, b)
 		return nil, &retryAfter{e, parseRetryAfter(res.Header.Get("Retry-After"), time.Now())}
 	case res.StatusCode != http.StatusOK:
-		return nil, apierr.New(req.URL.String(), res.StatusCode, b)
+		// The client follows no redirects (apierr.NoRedirects), so a 3xx lands here too.
+		return nil, apierr.FromResponse(req.URL.String(), res, b)
 	}
-	// 200 means the server took the batch. An answer that can't be read (cut off, or a proxy's
-	// page) doesn't undo that: the cursor moves on and the rules stay as they are.
-	var r Response
-	if err := errors.Join(rerr, json.Unmarshal(b, &r)); err != nil {
-		return &Response{Accepted: len(batch), unread: err}, nil
+	return ingestAnswer(res, b, rerr)
+}
+
+// ingestAnswer reads a 200. It counts as the server taking the batch only when the body is
+// ingest's answer, an object with "accepted"; anything else is an UnexpectedAnswer and the
+// batch is sent again. When ingest's answer can't be read whole (cut off, or rules the recorder
+// can't read), the count it gives still stands and the rules stay as they are.
+func ingestAnswer(res *http.Response, b []byte, rerr error) (*Response, error) {
+	var a struct {
+		Response
+		Accepted *int `json:"accepted"`
+	}
+	err := errors.Join(rerr, json.Unmarshal(b, &a))
+	if a.Accepted == nil {
+		if n, ok := acceptedField(b); ok {
+			a.Accepted = &n
+		}
+	}
+	if a.Accepted == nil {
+		return nil, &UnexpectedAnswer{Status: res.StatusCode, ContentType: res.Header.Get("Content-Type")}
+	}
+	r := a.Response
+	r.Accepted = *a.Accepted
+	if err != nil {
+		r.Rules, r.unread = nil, err
 	}
 	return &r, nil
+}
+
+// acceptedField finds "accepted" in a JSON object that may be cut off after it.
+func acceptedField(b []byte) (int, bool) {
+	d := json.NewDecoder(bytes.NewReader(b))
+	if t, err := d.Token(); err != nil || t != json.Delim('{') {
+		return 0, false
+	}
+	for d.More() {
+		k, err := d.Token()
+		if err != nil {
+			return 0, false
+		}
+		if k == "accepted" {
+			var n *int
+			if d.Decode(&n) != nil || n == nil {
+				return 0, false
+			}
+			return *n, true
+		}
+		var skip json.RawMessage
+		if d.Decode(&skip) != nil {
+			return 0, false
+		}
+	}
+	return 0, false
 }

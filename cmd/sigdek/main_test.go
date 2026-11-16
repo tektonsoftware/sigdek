@@ -662,9 +662,11 @@ func TestLogoutAndStatusAfterSigningInAgain(t *testing.T) {
 	if out := cli("status"); !strings.Contains(out, "Errors      none") {
 		t.Errorf("an error from before signing in again still shows:\n%s", out)
 	}
-	os.WriteFile(config.ErrorLog(home), []byte(`{"at":"`+stamp(at)+`","error":"upload: the server accepted 3 records, but its answer couldn't be read (EOF)"}`+"\n"), 0o600)
+	// A warning from an upload that went through (ingest's answer was cut off after its count)
+	// still shows next to the check mark.
+	os.WriteFile(config.ErrorLog(home), []byte(`{"at":"`+stamp(at)+`","error":"upload: the server's answer says it accepted 3 of 3 records, but the rest of it couldn't be read (EOF)"}`+"\n"), 0o600)
 	os.WriteFile(health, []byte(`{"last_try":"`+at.Add(-300*time.Millisecond).Format(time.RFC3339Nano)+`","last_ok":"`+at.Add(time.Second).Format(time.RFC3339Nano)+`"}`), 0o600)
-	if out := cli("status"); !strings.Contains(out, "answer couldn't be read") || !strings.Contains(out, "[x] Uploads work") {
+	if out := cli("status"); !strings.Contains(out, "the rest of it couldn't be read") || !strings.Contains(out, "[x] Uploads work") {
 		t.Errorf("a warning from the last good upload is hidden:\n%s", out)
 	}
 }
