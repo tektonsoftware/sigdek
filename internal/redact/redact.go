@@ -230,9 +230,12 @@ func replace(s string, p pattern, total *int) string {
 	return b.String()
 }
 
-// matches returns p's matches in s, as FindAllStringSubmatchIndex does. With p.overlap, each
-// search after the first starts where the previous match's value starts (its first group that
-// took part), so matches may overlap; replace skips a value that starts inside one it stripped.
+// matches returns p's matches in s, as FindAllStringSubmatchIndex does. With p.overlap, a match
+// whose bare value (its last group) follows a blank and starts with "-" may be another flag taken
+// as this one's value, as in --skip-password --password VALUE, so the next search starts at that
+// value; replace skips a value that starts inside one it stripped. Any other match ends the
+// search there, as without overlap. A value after "=" is the flag's own, and a value after a blank
+// is one word, so each byte is searched at most twice and the search stays linear.
 func matches(s string, p pattern) [][]int {
 	re := p.re.get()
 	if !p.overlap {
@@ -250,14 +253,10 @@ func matches(s string, p pattern) [][]int {
 			}
 		}
 		all = append(all, m)
-		next := m[1]
-		for g := 2; g < len(m); g += 2 {
-			if m[g] >= 0 {
-				next = m[g]
-				break
-			}
+		at = max(m[1], m[0]+1)
+		if v, e := m[len(m)-2], m[len(m)-1]; v > m[0] && s[v-1] != '=' && strings.HasPrefix(s[v:e], "-") {
+			at = v
 		}
-		at = max(next, m[0]+1)
 	}
 	return all
 }

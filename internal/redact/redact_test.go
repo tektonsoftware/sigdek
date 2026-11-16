@@ -390,10 +390,27 @@ func TestRound5Redaction(t *testing.T) {
 
 // QA3-REC-3 and QA4-REC-1: a secret given after a space to a password, token, secret or key
 // flag is stripped even when it starts with "-", as about 1 in 64 URL-safe base64 keys does.
-// 0.1.1's own flags (--password, --api-key and the rest of secretFlags) always take the next
+// 0.1.1's own flags (--password, --api-key and the rest of v011Flags) always take the next
 // word, as 0.1.1 did, so a human or lowercase hyphenated secret is stripped too. For a flag with
-// a word before the name, such as --skip-password, only a value that reads as a flag (-u, -uroot,
-// -P3306, --verbose, --host=…) means it took none. A lone "-" or "--" holds no secret.
+// a word before the name, --no-, --ask-, --prompt- and --with- take no value, and otherwise a
+// value that reads as a flag (-u, -uroot, -P3306, --verbose, --host=…) means it took none. A lone
+// "-" or "--", a value made only of < or >, and a docker build --secret spec hold no secret.
+// v011Flags are the flag names 0.1.1's pattern matched (410db01, redact.go), written out here
+// rather than read from secretFlags, so dropping a name from the code fails this test (QA5-REC-2).
+var v011Flags = []string{"password", "passwd", "secret", "token", "api-key", "apikey", "access-key", "account-key", "client-secret", "auth-token"}
+
+func TestSecretFlagsKeep011sNames(t *testing.T) {
+	have := map[string]bool{}
+	for _, n := range secretFlags {
+		have[n] = true
+	}
+	for _, n := range v011Flags {
+		if !have[n] {
+			t.Errorf("secretFlags lacks %q, which 0.1.1 stripped the next word after", n)
+		}
+	}
+}
+
 func TestFlagValueThatStartsWithADash(t *testing.T) {
 	key := "-Hk3pQ9xZ2mLw7Rt5Vb8N"
 	pass := "-Zq7n3HRc" + fake("", 6, alnum) + "d1"
@@ -418,7 +435,7 @@ func TestFlagValueThatStartsWithADash(t *testing.T) {
 		{"deploy --Api-Key -k3pq-9xz2-mlw7-rt5v prod", "k3pq-9xz2-mlw7-rt5v"},
 		{"mysql --password -u root shop", "-u"}, // over-redacted, as 0.1.1 did
 	}
-	for _, name := range secretFlags {
+	for _, name := range v011Flags {
 		cases = append(cases, struct{ in, secret string }{"deploy --" + name + " -lark-spur-9 prod", "lark-spur-9"})
 	}
 	for _, c := range cases {
@@ -472,6 +489,29 @@ func TestFlagTakenAsAnotherFlagsValue(t *testing.T) {
 	} {
 		if out, n := String(in); out != in || n != 0 {
 			t.Errorf("%q -> %q (%d)", in, out, n)
+		}
+	}
+	// QA5-REC-3: a flag written inside a value that was stripped isn't judged again, so a sed
+	// edit of a script's flag keeps its replacement text, as in 0.1.1.
+	in, want := `sed -i 's/--password x/--password y/' run.sh`, `sed -i 's/--password [redacted] y/' run.sh`
+	if out, n := String(in); out != want || n != 1 {
+		t.Errorf("%q -> %q (%d), want %q (1)", in, out, n, want)
+	}
+}
+
+// QA5-REC-1: the flag search that lets one flag be taken as another's value stays linear. Chains
+// of flags whose values run to the next blank took seconds at 64 KB when every match was searched
+// again from its value; 0.1.1 takes about 30 ms.
+func TestFlagSearchStaysLinear(t *testing.T) {
+	if raceDetector {
+		t.Skip("timing isn't meaningful under the race detector")
+	}
+	for _, link := range []string{"--token=", "--no-password=", "--password=a", "--no-password ", "--skip-password --password=", "--db-password -"} {
+		in := "x " + strings.Repeat(link, 65536/len(link))
+		start := time.Now()
+		String(in)
+		if el := time.Since(start); el > 500*time.Millisecond {
+			t.Errorf("%q x %d took %v", link, 65536/len(link), el)
 		}
 	}
 }
