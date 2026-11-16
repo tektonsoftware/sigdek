@@ -292,11 +292,12 @@ func Normalize(s string) string {
 	b.Grow(len(s))
 	var quote byte
 	blank, cmdPos, inWord := false, true, false
+	op := false // the last character written is an unquoted | or &
 	emit := func(c byte) {
 		if blank && b.Len() > 0 && last(&b) != '\n' {
 			b.WriteByte(' ')
 		}
-		blank = false
+		blank, op = false, false
 		if cmdPos && 'A' <= c && c <= 'Z' {
 			c += 'a' - 'A'
 		}
@@ -353,6 +354,10 @@ func Normalize(s string) string {
 		case c == ' ' || c == '\t' || c == '\r' || (c == '\n' && quote != 0):
 			blank = true
 			endWord()
+		case c == '\n' && op && continues(&b):
+			// After | |& && or ||, the shell reads on past the newline: one command (BB-XR-4).
+			blank = true
+			endWord()
 		case c == '\n':
 			blank, cmdPos, inWord = false, true, false
 			if b.Len() > 0 && last(&b) != '\n' {
@@ -360,12 +365,20 @@ func Normalize(s string) string {
 			}
 		case quote == 0 && (c == ';' || c == '|' || c == '&' || c == '(' || c == '`'):
 			emit(c)
-			cmdPos, inWord = true, false
+			cmdPos, inWord, op = true, false, c == '|' || c == '&'
 		default:
 			emit(c)
 		}
 	}
 	return b.String()
+}
+
+// continues reports whether the output so far ends in an operator after which the shell
+// reads on past a newline: a pipe, |&, && or || (which ends in |). A lone & ends the command.
+// Normalize checks it only right after an unquoted | or &.
+func continues(b *strings.Builder) bool {
+	t := b.String() // no copy
+	return strings.HasSuffix(t, "|") || strings.HasSuffix(t, "&&") || strings.HasSuffix(t, "|&")
 }
 
 // ifsRef returns the length of a reference to IFS at the start of s ($IFS or ${IFS}), or 0.
