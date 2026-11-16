@@ -7,14 +7,17 @@
 #   scripts/agent-check/run.sh init     Claude Code, with the hooks `npx sigdek@latest init` writes
 #   scripts/agent-check/run.sh plugin   Claude Code, with this repository's plugin (--plugin-dir)
 #   scripts/agent-check/run.sh cursor   Cursor's terminal agent (`agent`), with `init`'s hooks
+#   scripts/agent-check/run.sh tools    no session: every Claude Code tool that takes a command
+#                                       meets the Block rule through `init`'s hooks (tools.mjs)
 #
-# Needs `claude` (or `agent`) on PATH and signed in: ANTHROPIC_API_KEY or CURSOR_API_KEY in CI.
+# Needs `claude` (or `agent`) on PATH and signed in: ANTHROPIC_API_KEY or CURSOR_API_KEY in CI
+# (tools needs `claude` only, and no key).
 # It never signs the recorder in, so nothing leaves the machine. The Block rule is a cached team
 # rule set written to SIGDEK_HOME/rules.json. SIGDEK_CHECK_WORK picks the scratch folder.
 set -euo pipefail
 
 mode=${1:-}
-case "$mode" in init | plugin | cursor) ;; *) echo "usage: $0 init|plugin|cursor" >&2; exit 2 ;; esac
+case "$mode" in init | plugin | cursor | tools) ;; *) echo "usage: $0 init|plugin|cursor|tools" >&2; exit 2 ;; esac
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 work=${SIGDEK_CHECK_WORK:-$(mktemp -d)}/$mode
@@ -66,6 +69,11 @@ if [ "$mode" != plugin ]; then
   warm .sigdek/launch.sh "$SIGDEK_HOME/bin"
   git add -A
   git commit -q -m "SigDek init"
+fi
+
+if [ "$mode" = tools ]; then
+  echo "Claude Code $(claude --version)"
+  exec node "$here/tools.mjs" "$SIGDEK_HOME" "$repo" sh "$repo/.sigdek/launch.sh" hook claude-code
 fi
 
 prompt='This is an automated check of a logging tool. Do exactly these steps, in order, one tool call each, and nothing else:

@@ -5,7 +5,9 @@ name: agent-check
 # blocking is found the day it ships. Daily, but each job only runs when something changed: a new
 # agent version, a new SigDek release, or a change to the plugin, these scripts or this file.
 # Mondays and manual runs check regardless. A failed scheduled run opens (or comments on) one
-# issue per agent.
+# issue per agent. The Claude Code job also reads Claude Code's tool list (scripts/agent-check/
+# tools.mjs) and fails when a tool whose input has a command gets past a command Block rule,
+# as Monitor and PowerShell did before 0.1.2.
 #
 # Nothing leaves the runner: the recorder is never signed in, and the Block rule is a cached rule
 # set in a scratch SIGDEK_HOME. Secrets: ANTHROPIC_API_KEY (Claude Code, Haiku, at most $0.25 a
@@ -87,6 +89,11 @@ jobs:
       - name: The plugin passes Claude Code's own validation
         if: steps.install.outcome == 'success'
         run: claude plugin validate --strict ./plugins/claude-code
+      - name: Every tool that takes a command meets a command Block rule
+        if: steps.install.outcome == 'success' && !cancelled()
+        env:
+          SIGDEK_CHECK_WORK: ${{ runner.temp }}/agent-check
+        run: scripts/agent-check/run.sh tools
       - name: Records and blocks with `sigdek init`'s hooks
         if: steps.install.outcome == 'success' && !cancelled()
         env:
