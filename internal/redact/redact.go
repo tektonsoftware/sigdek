@@ -85,8 +85,8 @@ var patterns = []pattern{
 	{re: lazy(`\baws\s+configure\s+set\s+(?:\S+\.)?(?:aws_secret_access_key|aws_session_token)\s+(?:'([^']*)'|"([^"]*)"|([^\s'"]+))`), group: -1},
 	{re: lazy(`\bsshpass\s+(?:-\S+\s+)*?-p\s*(?:'([^']*)'|"([^"]*)"|([^\s'"]+))`), group: -1},
 	{re: lazy(`\bhtpasswd\s+(?:-\w+\s+)*-\w*b\w*\s+(?:-\w+\s+)*(?:\S+\s+)??\S+\s+(?:'([^']*)'|"([^"]*)"|([^\s'"|;&]+))\s*(?:$|[|;&\n])`), group: -1},
-	{re: lazy(`\bredis-cli\b[^|;&\n]*?\s-a\s+(?:'([^']*)'|"([^"]*)"|([^\s'"|;&]+))`), group: -1, heuristic: true},                                          // redis-cli -a
-	{re: lazy(`\bmongo(?:sh|dump|restore|import|export)?\b[^|;&\n]*?\s-p\s+(?:'([^']*)'|"([^"]*)"|([^-\s'"|;&][^\s'"|;&]*))`), group: -1, heuristic: true}, // mongosh -p
+	{re: lazy(`\bredis-cli\b[^|;&\n]*?\s-a\s+(?:'([^']*)'|"([^"]*)"|([^\s'"|;&]+))`), group: -1, heuristic: true},                     // redis-cli -a
+	{re: lazy(mongoCommand + `\s(?:[^|;&\n]*?\s)?-p\s+(?:'([^']*)'|"([^"]*)"|([^-\s'"|;&][^\s'"|;&]*))`), group: -1, heuristic: true}, // mongosh -p
 	{re: lazy(`\b(?:mysql|mysqldump|mariadb)\b[^\n|;&]*\s-p([^\s'"]+)`), group: 1},
 	{re: lazy(`(?i)(?:^|[^A-Za-z0-9])(?:_authToken|_auth|_password)(?:\s*=\s*|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"]+))`), group: -1},
 	// Authorization and cookie headers.
@@ -97,6 +97,12 @@ var patterns = []pattern{
 	// --db-password, --github-token. --no-password and the like take no value.
 	{re: lazy(`(?i)--(?:[a-z]+-)?(?:password|passwd|secret|token|api-key|apikey|access-key|account-key|client-secret|auth-token)(?:=|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`), group: -1, heuristic: true, keep: flagWithoutValue},
 }
+
+// mongoCommand finds a MongoDB tool run as a command: at the start of one (after ; & | ( or a
+// backtick), after sudo or variable assignments, by path, or as what docker exec, kubectl exec or
+// a "--" runs. So in docker run --name mongo -p 27017:27017, mongo is a name, not the program,
+// and -p takes a port, not a password.
+const mongoCommand = `(?:^|[;&|(\x60\n]|\s--\s|\bexec\s(?:[^|;&\n]*?\s)?)\s*(?:sudo\s+(?:-\S+\s+)*)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:[^\s;&|()\x60'"]*/)?mongo(?:sh|dump|restore|import|export)?`
 
 // keyValue finds key=value and key: value pairs where the key names a secret, including
 // JSON ("password": "x"). It is handled in code because three look-alikes must be told
@@ -345,14 +351,20 @@ func portNotPassword(_ string, _ []int, v string) bool {
 }
 
 // flagWithoutValue vetoes flags that take no value, so the next word isn't one: --no-password,
-// --ask-password, --prompt-password, gh auth login --with-token < file. It also vetoes a
-// redirection in place of a value, and docker build --secret id=…,src=… (see dockerSecretSpec).
+// --ask-password, --prompt-password, gh auth login --with-token < file, and any flag followed
+// by another flag, as in mysql --skip-password -u root. It also vetoes a redirection in place of
+// a value, and docker build --secret id=…,src=… (see dockerSecretSpec). A value given with = or
+// in quotes is the flag's, even when it starts with "-".
 func flagWithoutValue(s string, m []int, v string) bool {
 	flag := strings.ToLower(s[m[0]:min(m[1], m[0]+10)])
 	for _, p := range []string{"--no-", "--ask-", "--prompt-", "--with-"} {
 		if strings.HasPrefix(flag, p) {
 			return true
 		}
+	}
+	// m[6] is where the pattern's third group, a value without quotes, starts.
+	if bare := m[6]; bare > 0 && strings.HasPrefix(v, "-") && s[bare-1] != '=' {
+		return true
 	}
 	return strings.Trim(v, "<>") == "" || dockerSecretSpec(s, m, v)
 }

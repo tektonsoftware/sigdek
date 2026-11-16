@@ -346,3 +346,44 @@ func TestRound4Redaction(t *testing.T) {
 		}
 	}
 }
+
+// QA2-L5-3: a MongoDB tool counts only where it runs as a command, and a flag followed by
+// another flag has no value, so everyday commands aren't redacted. Each form that runs mongosh
+// or passes a password is still caught.
+func TestRound5Redaction(t *testing.T) {
+	pass := "Zq7n3HRc" + fake("", 6, alnum)
+	for _, c := range []struct{ in, secret string }{
+		{"docker exec -it db mongosh -u admin -p " + pass, pass},
+		{"docker exec -it -u root mongo mongosh admin -p '" + pass + "'", pass},
+		{"kubectl exec -it mongo-0 -- mongosh -u admin -p " + pass, pass},
+		{"sudo mongosh -u admin -p " + pass, pass},
+		{"/usr/local/bin/mongosh -u admin -p " + pass, pass},
+		{"MONGO_URL=x mongosh -u admin -p " + pass, pass},
+		{"cd backup && mongodump -u admin -p " + pass + " --out dump", pass},
+		{"echo ok; mongorestore -u admin -p " + pass, pass},
+		{"OUT=$(mongoexport -u admin -p " + pass + " -c users)", pass},
+		{"tool --db-password=-" + pass + " sync", pass},
+		{"tool --db-password '-" + pass + "' sync", pass},
+		{"docker login -u ci --password " + pass + " registry.example.com", pass},
+	} {
+		out, n := String(c.in)
+		if strings.Contains(out, c.secret) || n == 0 {
+			t.Errorf("%q -> %q (%d)", c.in, out, n)
+		}
+	}
+	for _, in := range []string{
+		"docker run --name mongo -p 27017:27017 -d mongo:7",
+		"docker run -d --name mongo -p 27017:27017 -e MONGO_INITDB_DATABASE=app mongo:7",
+		"podman run --rm --name mongodb -p 27017:27017 mongo",
+		"kubectl exec mongo-0 -- ls -p data",
+		"kubectl port-forward svc/mongo -p 27017",
+		"mysql --skip-password -u root shop",
+		"mysqldump --skip-password -h db.example.com shop",
+		"pg_dump --no-password -h db.example.com app",
+		"git commit -m 'mongosh -p is how you pass it'",
+	} {
+		if out, n := String(in); out != in || n != 0 {
+			t.Errorf("%q -> %q (%d)", in, out, n)
+		}
+	}
+}
