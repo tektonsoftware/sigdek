@@ -56,8 +56,9 @@ type Response struct {
 }
 
 // UnexpectedAnswer is a 200 whose body isn't ingest's answer (an object with "accepted"): a
-// proxy's warning or sign-in page, or an empty body. The batch doesn't count as sent, so it
-// is sent again later; the server counts any record it already has as a duplicate (BB-NET-1).
+// proxy's warning or sign-in page, or an empty body; or a success other than 200, such as a
+// 204 No Content. The batch doesn't count as sent, so it is sent again later; the server counts
+// any record it already has as a duplicate (BB-NET-1).
 type UnexpectedAnswer struct {
 	Status      int
 	ContentType string
@@ -424,6 +425,10 @@ func send(ctx context.Context, client *http.Client, dev config.Device, userAgent
 	case res.StatusCode == http.StatusTooManyRequests || res.StatusCode >= 500:
 		e := apierr.New(req.URL.String(), res.StatusCode, b)
 		return nil, &retryAfter{e, parseRetryAfter(res.Header.Get("Retry-After"), time.Now())}
+	case res.StatusCode >= 200 && res.StatusCode < 300 && res.StatusCode != http.StatusOK:
+		// Ingest answers 200. Any other success, such as a proxy's 204 No Content, isn't its
+		// answer, and may come back every time, so it is treated like an unexpected 200.
+		return nil, &UnexpectedAnswer{Status: res.StatusCode, ContentType: res.Header.Get("Content-Type")}
 	case res.StatusCode != http.StatusOK:
 		// The client follows no redirects (apierr.NoRedirects), so a 3xx lands here too.
 		return nil, apierr.FromResponse(req.URL.String(), res, b)

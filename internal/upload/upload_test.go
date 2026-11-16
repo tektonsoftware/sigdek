@@ -306,6 +306,7 @@ func TestServerErrorsBackOff(t *testing.T) {
 // answer is read.
 func TestOnlyIngestsAnswerMovesTheCursor(t *testing.T) {
 	var body, contentType string
+	var status int
 	var got [][]json.RawMessage
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -321,6 +322,9 @@ func TestOnlyIngestsAnswerMovesTheCursor(t *testing.T) {
 		if contentType != "" {
 			w.Header().Set("Content-Type", contentType)
 		}
+		if status != 0 {
+			w.WriteHeader(status)
+		}
 		w.Write([]byte(body))
 	}))
 	defer srv.Close()
@@ -328,15 +332,22 @@ func TestOnlyIngestsAnswerMovesTheCursor(t *testing.T) {
 	rules.Save(config.RulesPath(home), rules.Set{Version: 2, Rules: []rules.Rule{{ID: "keep", Effect: rules.Flag, Command: "x"}}})
 	now := time.Now()
 	o := Options{Now: func() time.Time { return now }}
-	for _, c := range []struct{ body, contentType, says string }{
-		{"<html>proxy login</html>", "text/html; charset=utf-8", "HTTP 200, text/html; charset=utf-8"},
-		{"", "", "HTTP 200, no content type"},
-		{"{}", "application/json", "HTTP 200, application/json"},
-		{`{"accepted":null}`, "application/json", "HTTP 200, application/json"},
-		{`["accepted",3]`, "application/json", "HTTP 200, application/json"},
-		{`{"ok":true,"accepted":`, "application/json", "HTTP 200, application/json"},
+	for _, c := range []struct {
+		status            int
+		body, contentType string
+		says              string
+	}{
+		{0, "<html>proxy login</html>", "text/html; charset=utf-8", "HTTP 200, text/html; charset=utf-8"},
+		{0, "", "", "HTTP 200, no content type"},
+		{0, "{}", "application/json", "HTTP 200, application/json"},
+		{0, `{"accepted":null}`, "application/json", "HTTP 200, application/json"},
+		{0, `["accepted",3]`, "application/json", "HTTP 200, application/json"},
+		{0, `{"ok":true,"accepted":`, "application/json", "HTTP 200, application/json"},
+		// QA2-L5-5: a success other than 200 isn't ingest's answer, even with ingest's body.
+		{http.StatusNoContent, "", "", "HTTP 204, no content type"},
+		{http.StatusAccepted, `{"accepted":3}`, "application/json", "HTTP 202, application/json"},
 	} {
-		body, contentType = c.body, c.contentType
+		status, body, contentType = c.status, c.body, c.contentType
 		now = now.Add(2 * time.Hour)
 		sum, err := FlushWith(home, "t", o)
 		var odd *UnexpectedAnswer
@@ -357,7 +368,7 @@ func TestOnlyIngestsAnswerMovesTheCursor(t *testing.T) {
 		t.Fatalf("rules changed: %+v", got)
 	}
 	// Once ingest answers, the batch goes up whole: no gap.
-	body, contentType = "", "ingest"
+	status, body, contentType = 0, "", "ingest"
 	if sum, err := Flush(home, "t", nil); err != nil || sum.Sent != 3 || len(got) != 1 || len(got[0]) != 3 {
 		t.Fatalf("sum %+v err %v batches %d", sum, err, len(got))
 	}
