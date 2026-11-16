@@ -282,6 +282,10 @@ jobs:
     runs-on: windows-latest
     # For WINGET_TOKEN (see the release job).
     environment: release
+    # This job runs a downloaded program and hands it WINGET_TOKEN, so it gets read access
+    # only: no write to this repository and no OIDC token (the workflow's defaults give both).
+    permissions:
+      contents: read
     steps:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -290,9 +294,21 @@ jobs:
       - name: Submit to microsoft/winget-pkgs
         shell: pwsh
         env:
-          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          # wingetcreate reads its token from this variable. Its --token argument can end up
+          # in the log, as wingetcreate itself warns.
+          WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          # One fixed wingetcreate release, run only if its SHA-256 matches. Release assets
+          # can be replaced, so the version in the address alone isn't enough. To move to a
+          # newer one, download its wingetcreate.exe, hash it yourself, and change both lines.
+          WINGETCREATE_URL: https://github.com/microsoft/winget-create/releases/download/v1.28.1.0/wingetcreate.exe
+          WINGETCREATE_SHA256: 63D980BA79E97042395BD6EB5992C2DB9E01E9E7A8A22958A95C288F27310413
         run: |
-          if (-not $env:WINGET_TOKEN) { Write-Output "::notice::WINGET_TOKEN isn't set; the manifests are attached to this run for a manual submission."; exit 0 }
-          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          if (-not $env:WINGET_CREATE_GITHUB_TOKEN) { Write-Output "::notice::WINGET_TOKEN isn't set; the manifests are attached to this run for a manual submission."; exit 0 }
+          Invoke-WebRequest $env:WINGETCREATE_URL -OutFile wingetcreate.exe
+          $hash = (Get-FileHash wingetcreate.exe -Algorithm SHA256).Hash
+          if ($hash -ne $env:WINGETCREATE_SHA256) {
+            Write-Output "::error::wingetcreate.exe from $env:WINGETCREATE_URL has SHA-256 $hash, not the pinned $env:WINGETCREATE_SHA256, so it wasn't run. The manifests are attached to this run for a manual submission."
+            exit 1
+          }
           $dir = Get-ChildItem -Directory -Recurse winget/manifests | Where-Object { $_.Name -match '^\d' } | Select-Object -First 1
-          .\wingetcreate.exe submit --no-open --token $env:WINGET_TOKEN --prtitle "New version: TektonSoftware.SigDek $($dir.Name)" $dir.FullName
+          .\wingetcreate.exe submit --no-open --prtitle "New version: TektonSoftware.SigDek $($dir.Name)" $dir.FullName
