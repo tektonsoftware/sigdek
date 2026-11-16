@@ -146,10 +146,19 @@ func claudeCodeAction(name string, rawInput json.RawMessage, cwd string) actionF
 	switch name {
 	case "Bash":
 		f.Kind, f.Command = "shell", str(in, "command")
-	case "PowerShell", "Monitor":
-		// PowerShell runs its command in PowerShell; Monitor runs its command in the shell and
-		// watches the output. Rules and the record treat both as shell commands (BB-RULE-1).
+	case "PowerShell":
+		// PowerShell runs its command in PowerShell. Rules and the record treat it as a shell
+		// command (BB-RULE-1).
 		shellCommand(&f, in)
+	case "Monitor":
+		// Monitor runs its command in the shell and watches the output, as a shell command
+		// (BB-RULE-1). Without a command it watches a WebSocket, named by "ws": that is a web
+		// action with that URL, so URL rules see it and the record shows where it connected.
+		if shellCommand(&f, in); f.Kind != "shell" {
+			if ws, ok := in["ws"].(string); ok && ws != "" {
+				f.Kind, f.URL = "web", ws
+			}
+		}
 	case "Read", "NotebookRead":
 		f.Kind, f.Path = "file_read", str(in, "file_path", "notebook_path")
 	case "Grep":
