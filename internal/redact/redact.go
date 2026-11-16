@@ -38,6 +38,11 @@ type pattern struct {
 	heuristic bool
 	// keep, when set, vetoes a match that only looks like a secret.
 	keep func(s string, m []int, value string) bool
+	// overlap looks for the next match from where a match's value starts rather than where
+	// it ends, so a flag that another flag took as its value is judged on its own, as in
+	// mysql --skip-password --password VALUE. The expression must not look behind its first
+	// character (no ^ or \b there), since each search starts part way through the text.
+	overlap bool
 }
 
 var patterns = []pattern{
@@ -95,7 +100,7 @@ var patterns = []pattern{
 	{re: lazy(`(?i)\b(?:bearer|token)\s+([A-Za-z0-9_\-\.=+/]{16,})`), group: 1, heuristic: true, keep: noDigit},
 	// --password VALUE style flags, also with a word before the name: --http-password,
 	// --db-password, --github-token. --no-password and the like take no value.
-	{re: lazy(`(?i)--(?:[a-z]+-)?(?:password|passwd|secret|token|api-key|apikey|access-key|account-key|client-secret|auth-token)(?:=|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`), group: -1, heuristic: true, keep: flagWithoutValue},
+	{re: lazy(`(?i)--(?:[a-z]+-)?(?:password|passwd|secret|token|api-key|apikey|access-key|account-key|client-secret|auth-token)(?:=|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`), group: -1, heuristic: true, keep: flagWithoutValue, overlap: true},
 }
 
 // mongoCommand finds a MongoDB tool run as a command: at the start of one (after ; & | ( or a
@@ -177,7 +182,7 @@ func inSpans(spans [][2]int, i int) bool {
 }
 
 func replace(s string, p pattern, total *int) string {
-	idx := p.re.get().FindAllStringSubmatchIndex(s, -1)
+	idx := matches(s, p)
 	if idx == nil {
 		return s
 	}
@@ -223,6 +228,38 @@ func replace(s string, p pattern, total *int) string {
 	}
 	b.WriteString(s[last:])
 	return b.String()
+}
+
+// matches returns p's matches in s, as FindAllStringSubmatchIndex does. With p.overlap, each
+// search after the first starts where the previous match's value starts (its first group that
+// took part), so matches may overlap; replace skips a value that starts inside one it stripped.
+func matches(s string, p pattern) [][]int {
+	re := p.re.get()
+	if !p.overlap {
+		return re.FindAllStringSubmatchIndex(s, -1)
+	}
+	var all [][]int
+	for at := 0; at < len(s); {
+		m := re.FindStringSubmatchIndex(s[at:])
+		if m == nil {
+			break
+		}
+		for i := range m {
+			if m[i] >= 0 {
+				m[i] += at
+			}
+		}
+		all = append(all, m)
+		next := m[1]
+		for g := 2; g < len(m); g += 2 {
+			if m[g] >= 0 {
+				next = m[g]
+				break
+			}
+		}
+		at = max(next, m[0]+1)
+	}
+	return all
 }
 
 func replaceKeyValues(s string, spans [][2]int, total *int) string {
@@ -350,25 +387,49 @@ func portNotPassword(_ string, _ []int, v string) bool {
 	return i > 0 && i < len(v) && v[i] == '/'
 }
 
-// flagWithoutValue vetoes flags that take no value, so the next word isn't one: --no-password,
-// --ask-password, --prompt-password, gh auth login --with-token < file, and any flag followed
-// by another flag, as in mysql --skip-password -u root. It also vetoes a redirection in place of
-// a value, and docker build --secret id=…,src=… (see dockerSecretSpec). A value given with = or
-// in quotes is the flag's, even when it starts with "-", and so is a bare value that starts with
-// "-" but doesn't look like a flag, as a generated key can: --api-key -Hk3pQ9xZ2mLw7Rt5Vb8N
-// (QA3-REC-3).
+// flagWithoutValue vetoes a redirection in place of a value, docker build --secret id=…,src=…
+// (see dockerSecretSpec), and a lone "-" or "--" after a space, none of which holds a secret.
+//
+// 0.1.1's own flags (secretFlags) otherwise always take the next word as their value, as 0.1.1
+// did, even when it starts with "-": --password -hunter22 (QA4-REC-1). mysql --password -u root
+// loses -u to that, as it did in 0.1.1.
+//
+// A flag with a word before the secret's name may take no value: --no-password, --ask-password,
+// --prompt-password, gh auth login --with-token < file, and one followed by another flag, as in
+// mysql --skip-password -u root. Its value given with = or in quotes is its own, even when it
+// starts with "-", and so is a bare value that starts with "-" but doesn't look like a flag, as
+// a generated key can: --db-password -Hk3pQ9xZ2mLw7Rt5Vb8N (QA3-REC-3).
 func flagWithoutValue(s string, m []int, v string) bool {
-	flag := strings.ToLower(s[m[0]:min(m[1], m[0]+10)])
-	for _, p := range []string{"--no-", "--ask-", "--prompt-", "--with-"} {
-		if strings.HasPrefix(flag, p) {
+	// m[6] is where the pattern's third group, a value without quotes, starts.
+	spaced := m[6] > 0 && s[m[6]-1] != '='
+	if strings.Trim(v, "<>") == "" || dockerSecretSpec(s, m, v) || spaced && (v == "-" || v == "--") {
+		return true
+	}
+	name := flagName(s, m[0])
+	for _, f := range secretFlags {
+		if strings.EqualFold(name, f) {
+			return false
+		}
+	}
+	for _, p := range []string{"no-", "ask-", "prompt-", "with-"} {
+		if strings.HasPrefix(strings.ToLower(name), p) {
 			return true
 		}
 	}
-	// m[6] is where the pattern's third group, a value without quotes, starts.
-	if bare := m[6]; bare > 0 && s[bare-1] != '=' && looksLikeFlag(v) {
-		return true
+	return spaced && looksLikeFlag(v)
+}
+
+// secretFlags are the flag names 0.1.1 matched, with no word before the secret's name.
+var secretFlags = []string{"password", "passwd", "secret", "token", "api-key", "apikey", "access-key", "account-key", "client-secret", "auth-token"}
+
+// flagName returns the name of the flag that starts at s[at], without its dashes: up to the =
+// or blank that the pattern puts between a flag and its value.
+func flagName(s string, at int) string {
+	name := s[at+2:]
+	if i := strings.IndexAny(name, "= \t\n\f\r"); i >= 0 {
+		name = name[:i]
 	}
-	return strings.Trim(v, "<>") == "" || dockerSecretSpec(s, m, v)
+	return name
 }
 
 // looksLikeFlag reports a word that reads as a command-line flag rather than a key: "-", "--",

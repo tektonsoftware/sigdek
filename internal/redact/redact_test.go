@@ -388,17 +388,19 @@ func TestRound5Redaction(t *testing.T) {
 	}
 }
 
-// QA3-REC-3: a secret given after a space to a password, token, secret or key flag is stripped
-// even when it starts with "-", as about 1 in 64 URL-safe base64 keys does. Only a value that
-// reads as a flag (-u, -uroot, -P3306, --verbose, --host=…, "-" or "--") means the flag before
-// it took none.
+// QA3-REC-3 and QA4-REC-1: a secret given after a space to a password, token, secret or key
+// flag is stripped even when it starts with "-", as about 1 in 64 URL-safe base64 keys does.
+// 0.1.1's own flags (--password, --api-key and the rest of secretFlags) always take the next
+// word, as 0.1.1 did, so a human or lowercase hyphenated secret is stripped too. For a flag with
+// a word before the name, such as --skip-password, only a value that reads as a flag (-u, -uroot,
+// -P3306, --verbose, --host=…) means it took none. A lone "-" or "--" holds no secret.
 func TestFlagValueThatStartsWithADash(t *testing.T) {
 	key := "-Hk3pQ9xZ2mLw7Rt5Vb8N"
 	pass := "-Zq7n3HRc" + fake("", 6, alnum) + "d1"
 	hex := "-a" + fake("", 39, hexchars)
 	upperFirst := "-A" + fake("", 6, "abcdefghjkmnpqrstuvwxyz") + "3" + fake("", 8, "abcdefghjkmnpqrstuvwxyz")
 	digitFirst := "-7" + fake("", 6, "abcdefghjkmnpqrstuvwxyz")
-	for _, c := range []struct{ in, secret string }{
+	cases := []struct{ in, secret string }{
 		{"deploy --api-key " + key + " sync", key},
 		{"app --client-secret " + key, key},
 		{"app --secret " + key, key},
@@ -408,7 +410,18 @@ func TestFlagValueThatStartsWithADash(t *testing.T) {
 		{"tool --api-key " + hex, hex},
 		{"tool --client-secret " + upperFirst + " sync", upperFirst},
 		{"tool --secret " + digitFirst + " sync", digitFirst},
-	} {
+		// QA4-REC-1: values that read like a flag, given to one of 0.1.1's own flags.
+		{"deploy --password -hunter22 prod", "hunter22"},
+		{"deploy --api-key -k3pq-9xz2-mlw7-rt5v prod", "k3pq-9xz2-mlw7-rt5v"},
+		{"tool --password -Secret123 sync", "Secret123"},
+		{"deploy --PASSWORD -hunter22 prod", "hunter22"},
+		{"deploy --Api-Key -k3pq-9xz2-mlw7-rt5v prod", "k3pq-9xz2-mlw7-rt5v"},
+		{"mysql --password -u root shop", "-u"}, // over-redacted, as 0.1.1 did
+	}
+	for _, name := range secretFlags {
+		cases = append(cases, struct{ in, secret string }{"deploy --" + name + " -lark-spur-9 prod", "lark-spur-9"})
+	}
+	for _, c := range cases {
 		out, n := String(c.in)
 		if strings.Contains(out, c.secret) || n == 0 {
 			t.Errorf("%q -> %q (%d)", c.in, out, n)
@@ -424,6 +437,38 @@ func TestFlagValueThatStartsWithADash(t *testing.T) {
 		"docker run --name mongo -p 27017:27017 -d mongo:7",
 		"tool --token - < token.txt",
 		"tool --token -- run",
+		"tool --password - < pass.txt",
+		"mysql --skip-password -u root --password-stdin shop",
+		"tool --db-password -v sync",
+	} {
+		if out, n := String(in); out != in || n != 0 {
+			t.Errorf("%q -> %q (%d)", in, out, n)
+		}
+	}
+}
+
+// QA4-REC-1: a flag that another flag took as its value is still judged on its own, so a secret
+// given to it is stripped. In mysql --skip-password --password VALUE, --skip-password takes no
+// value and --password takes VALUE, as 0.1.1 read it. In --password --token VALUE, 0.1.1 stripped
+// only --token; VALUE is now stripped too.
+func TestFlagTakenAsAnotherFlagsValue(t *testing.T) {
+	for _, c := range []struct{ in, secret string }{
+		{"mysql --skip-password --password hunter22 shop", "hunter22"},
+		{"pg_dump --no-password --token k3pq9xz2mlw7 app", "k3pq9xz2mlw7"},
+		{"tool --db-password --api-key -hunter22 sync", "hunter22"},
+		{"tool --ask-password --secret 'Lark Spur 9' sync", "Lark Spur 9"},
+		{"tool --password --token k3pq9xz2mlw7 sync", "k3pq9xz2mlw7"},
+	} {
+		out, n := String(c.in)
+		if strings.Contains(out, c.secret) || n == 0 {
+			t.Errorf("%q -> %q (%d)", c.in, out, n)
+		}
+	}
+	for _, in := range []string{
+		"mysql --skip-password --verbose shop",
+		"pg_dump --no-password --host db.example.com app",
+		"gh auth login --with-token < token.txt",
+		`git commit -m "use --skip-password --password x"`,
 	} {
 		if out, n := String(in); out != in || n != 0 {
 			t.Errorf("%q -> %q (%d)", in, out, n)
