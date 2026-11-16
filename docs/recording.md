@@ -40,7 +40,7 @@ Each record carries the hash of the one before it, per device, and the hosted se
 
 ## Never blocks your work by accident
 
-Any error inside the recorder or the launcher lets the action go ahead, and the hook commands can't fail even when the launcher is missing. Any error inside the recorder is written to `~/.sigdek/errors.log`; when the launcher can't download the recorder, `sigdek status` says so. `launch.sh` downloads with curl or wget, so on a machine with neither it records nothing. The only time SigDek stops an action is a Block rule your team wrote.
+Any error inside the recorder or the launcher lets the action go ahead, and the hook commands can't fail even when the launcher is missing. Any error inside the recorder is written to `~/.sigdek/errors.log`. `launch.sh` downloads the recorder with curl or wget; on a machine with neither, nothing is recorded until the pinned version is in its cache. When a project's or the Claude Code plugin's launcher can't download the recorder, `sigdek status` says so. The only time SigDek stops an action is a Block rule your team wrote.
 
 Two exceptions:
 

@@ -17,8 +17,9 @@ import (
 // A command is matched in two forms, and a rule matches if it matches either: as sent with
 // runs of blanks squeezed to one space, and as the shell reads its words (see Normalize), so
 // `git push \<newline> --force`, `r\m -rf` and `rm "-rf"` read as what they run. Block rules
-// read both forms whole, however long, so padding can't hide a command from them. Flag rules
-// only label what is recorded, and read at most FlagScanLimit bytes of each (see View).
+// read both forms whole, up to the hook's 8 MB of input (hook.MaxStdin), so padding can't hide a
+// command from them. Flag rules only label what is recorded, and read at most FlagScanLimit
+// bytes of each (see View).
 func (s Set) Match(a *event.Action, effect string) *Rule {
 	return s.match([]*event.Action{a}, effect, nil)
 }
