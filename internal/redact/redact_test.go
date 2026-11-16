@@ -283,10 +283,66 @@ func TestRound3Redaction(t *testing.T) {
 
 // Expressions are compiled when first used, not at start-up; every one of them compiles.
 func TestEveryExpressionCompiles(t *testing.T) {
-	for _, l := range []*lazyRE{keyValue, messageArg, varRef, secretWord} {
+	for _, l := range []*lazyRE{keyValue, messageArg, varRef, secretWord, namedSecret, hexKey, keyAlphabet} {
 		l.get()
 	}
 	for _, p := range patterns {
 		p.re.get()
+	}
+}
+
+// BB-RULE-6: everyday password and key names and flags are caught: DB_PASS, MYSQL_PWD, a
+// generated *_KEY, --http-password VALUE, redis-cli -a, mongosh -p, Vault tokens and a token
+// given as a URL's user. Look-alikes are left alone: PWD and OLDPWD, a *_KEY that holds a
+// name or a path, settings about a password, flags that take no value, and variables.
+func TestRound4Redaction(t *testing.T) {
+	pass := "Zq7n3HRc" + fake("", 6, alnum)
+	key := "In9ntgkf" + fake("", 24, alnum)
+	vault := "hvs." + fake("", 24, alnum)
+	hex := fake("", 40, hexchars)
+	for _, c := range []struct{ in, secret string }{
+		{"export DB_PASS=" + pass + " && npm start", pass},
+		{"DB_PASS='" + pass + "' npm run migrate", pass},
+		{"MYSQL_PWD=" + pass + " mysql -u root shop", pass},
+		{"export SMTP_PASS=" + pass, pass},
+		{"docker run -e REDIS_PASS=" + pass + " app", pass},
+		{"export ENCRYPTION_KEY=" + key, key},
+		{"SIGNING_KEY=" + key + " ./sign.sh", key},
+		{"export APP_KEY=base64:" + key + "=", key},
+		{"export MASTER_KEY=" + hex, hex},
+		{"kubectl create secret generic db --from-literal=DB_PASS=" + pass, pass},
+		{"redis-cli -h cache.example.com -a " + pass + " ping", pass},
+		{"redis-cli -a '" + pass + "' --no-auth-warning info", pass},
+		{"mongosh mongodb://db.example.com -u admin -p " + pass, pass},
+		{"mongodump --host db.example.com -u admin -p '" + pass + "' --out dump", pass},
+		{"wget --http-password " + pass + " https://files.example.com/f", pass},
+		{"curl --proxy-user u --db-password " + pass + " https://x.example", pass},
+		{"gh-tool --github-token " + key + " sync", key},
+		{"vault login " + vault, vault},
+		{"VAULT_ADDR=https://vault.example.com vault kv get -token=" + vault + " secret/app", vault},
+		{"git remote set-url origin https://" + hex + "@github.com/acme/api.git", hex},
+	} {
+		out, n := String(c.in)
+		if strings.Contains(out, c.secret) || n == 0 {
+			t.Errorf("%q -> %q (%d)", c.in, out, n)
+		}
+	}
+	for _, in := range []string{
+		"PWD=/tmp make", "cd $OLDPWD", "OLDPWD=/x ls", "git commit --no-verify -m 'bypass=1'",
+		"export SORT_KEY=name", "PRIMARY_KEY=id node seed.js", "export CACHE_KEY=users-v2",
+		"export GPG_KEY=0xABCD1234", "export SSH_KEY=~/.ssh/id_ed25519", "export S3_KEY=uploads/2026/report.pdf",
+		"export DB_PASS_FILE=/run/secrets/db", "export SSH_KEY_PATH=~/.ssh/id_rsa", "FIRST_PASS=true ./build.sh",
+		"aws dynamodb query --key-condition-expression 'pk = :v'",
+		"mongosh -u admin -p --authenticationDatabase admin", "redis-cli -a $REDIS_PASSWORD ping",
+		"pytest --pass-through x", "curl https://user@example.com/x", "git clone https://git@example.com/acme/api.git",
+		"pg_dump --no-password -h db.example.com app", "psql -w --no-password app",
+		"ansible-playbook site.yml --ask-vault-password", "gh auth login --with-token < token.txt",
+		"aws secretsmanager get-secret-value --secret-id prod/db", "docker login --password-stdin ghcr.io",
+		"export SIGNING_KEY=$SIGNING_KEY_B64", "export APP_KEY=${APP_KEY:-}", "hvs.short",
+		`git commit -m "redis-cli -a is how you pass the password"`,
+	} {
+		if out, n := String(in); out != in || n != 0 {
+			t.Errorf("%q -> %q", in, out)
+		}
 	}
 }

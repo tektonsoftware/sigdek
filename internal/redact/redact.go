@@ -61,6 +61,9 @@ var patterns = []pattern{
 	{re: lazy(`\bhf_[A-Za-z0-9]{30,}\b`)},                                                          // Hugging Face
 	{re: lazy(`\bdop_v1_[a-f0-9]{64}\b`)},                                                          // DigitalOcean
 	{re: lazy(`\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b`)},             // JWT
+	{re: lazy(`\bhv[sbr]\.[A-Za-z0-9_\-]{20,}`)},                                                   // HashiCorp Vault
+	// A token given as a URL's user, with no password: https://<token>@github.com/...
+	{re: lazy(`(?i)\bhttps?://([A-Za-z0-9_\-]{32,})@[^\s/@?#'"]+`), group: 1},
 	// Credentials embedded in URLs: scheme://user:password@host, where the user may be empty
 	// (redis://:pw@host) and the password may itself hold @ or / (the last @ ends it).
 	{re: lazy(`(?i)\b[a-z][a-z0-9+.\-]*://[^\s:/@'"]*:([^\s'"]+)@[^\s/@?#'"]+`), group: 1, keep: portNotPassword},
@@ -82,21 +85,28 @@ var patterns = []pattern{
 	{re: lazy(`\baws\s+configure\s+set\s+(?:\S+\.)?(?:aws_secret_access_key|aws_session_token)\s+(?:'([^']*)'|"([^"]*)"|([^\s'"]+))`), group: -1},
 	{re: lazy(`\bsshpass\s+(?:-\S+\s+)*?-p\s*(?:'([^']*)'|"([^"]*)"|([^\s'"]+))`), group: -1},
 	{re: lazy(`\bhtpasswd\s+(?:-\w+\s+)*-\w*b\w*\s+(?:-\w+\s+)*(?:\S+\s+)??\S+\s+(?:'([^']*)'|"([^"]*)"|([^\s'"|;&]+))\s*(?:$|[|;&\n])`), group: -1},
+	{re: lazy(`\bredis-cli\b[^|;&\n]*?\s-a\s+(?:'([^']*)'|"([^"]*)"|([^\s'"|;&]+))`), group: -1, heuristic: true},                                          // redis-cli -a
+	{re: lazy(`\bmongo(?:sh|dump|restore|import|export)?\b[^|;&\n]*?\s-p\s+(?:'([^']*)'|"([^"]*)"|([^-\s'"|;&][^\s'"|;&]*))`), group: -1, heuristic: true}, // mongosh -p
 	{re: lazy(`\b(?:mysql|mysqldump|mariadb)\b[^\n|;&]*\s-p([^\s'"]+)`), group: 1},
 	{re: lazy(`(?i)(?:^|[^A-Za-z0-9])(?:_authToken|_auth|_password)(?:\s*=\s*|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"]+))`), group: -1},
 	// Authorization and cookie headers.
 	{re: lazy(`(?i)\b(?:authorization|proxy-authorization)\s*[:=]\s*(?:bearer|basic|token)?\s*([^\s'"]+)`), group: 1, heuristic: true},
 	{re: lazy(`(?i)\b(?:set-)?cookie\s*:\s*([^'"\n]+)`), group: 1, heuristic: true},
 	{re: lazy(`(?i)\b(?:bearer|token)\s+([A-Za-z0-9_\-\.=+/]{16,})`), group: 1, heuristic: true, keep: noDigit},
-	// --password VALUE style flags.
-	{re: lazy(`(?i)--(?:password|passwd|secret|token|api-key|apikey|access-key|account-key|client-secret|auth-token)(?:=|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`), group: -1, heuristic: true, keep: dockerSecretSpec},
+	// --password VALUE style flags, also with a word before the name: --http-password,
+	// --db-password, --github-token. --no-password and the like take no value.
+	{re: lazy(`(?i)--(?:[a-z]+-)?(?:password|passwd|secret|token|api-key|apikey|access-key|account-key|client-secret|auth-token)(?:=|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`), group: -1, heuristic: true, keep: flagWithoutValue},
 }
 
 // keyValue finds key=value and key: value pairs where the key names a secret, including
 // JSON ("password": "x"). It is handled in code because three look-alikes must be told
 // apart from the context: rg 'token=' (the quote after = closes the argument), sed
 // s/password=old/password=new/ (an expression, not an assignment) and prose in messages.
-var keyValue = lazy(`(?i)(^|[^A-Za-z0-9_\-])([A-Za-z0-9_\-]*(?:password|passwd|secret|token|api[_\-]?key|apikey|access[_\-]?key|account[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|credentials?)[A-Za-z0-9_\-]*)(["']?)\s*[=:]\s*(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`)
+//
+// PASS, PWD and KEY name a secret only as a separate word after another (DB_PASS, MYSQL_PWD,
+// SIGNING_KEY), so PWD=/tmp and OLDPWD don't. A key named only by a generic KEY is redacted
+// only when its value looks generated (see generated): SORT_KEY=name stays.
+var keyValue = lazy(`(?i)(^|[^A-Za-z0-9_\-])([A-Za-z0-9_\-]*(?:password|passwd|secret|token|api[_\-]?key|apikey|access[_\-]?key|account[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|credentials?)[A-Za-z0-9_\-]*|[A-Za-z0-9_\-]*[A-Za-z0-9][_\-](?:pass|pwd|key)(?:[_\-][A-Za-z0-9_\-]*)?)(["']?)\s*[=:]\s*(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`)
 
 // messageArg finds the text of -m/--message arguments (git commit -am "...", git tag -m '...').
 var messageArg = lazy(`(?:^|\s)(?:-[a-zA-Z]*m|--message)(?:\s+|=)("(?:[^"\\]|\\.)*"|'[^']*')`)
@@ -241,9 +251,12 @@ func replaceKeyValues(s string, spans [][2]int, total *int) string {
 		case len(sep) > 1 && sep[0] == '=' && (sep[1] == ' ' || sep[1] == '\t'):
 			continue // grep password= config/: the word ends at =, and the next word isn't its value
 		}
-		v := s[start:end]
-		if v == Marker || varRef.get().MatchString(v) || settingOf(s[keyStart:m[5]]) || placeholder[strings.ToLower(v)] {
+		v, key := s[start:end], s[keyStart:m[5]]
+		if v == Marker || varRef.get().MatchString(v) || settingOf(key) || placeholder[strings.ToLower(v)] {
 			continue
+		}
+		if !namedSecret.get().MatchString(key) && !generated(v) {
+			continue // SORT_KEY=name: only a generic KEY names it, and the value isn't a key's
 		}
 		b.WriteString(s[last:start])
 		b.WriteString(Marker)
@@ -254,8 +267,27 @@ func replaceKeyValues(s string, spans [][2]int, total *int) string {
 	return b.String()
 }
 
-// secretWord finds the words that make a key name a secret, for settingOf.
-var secretWord = lazy(`(?i)password|passwd|secret|token|api[_\-]?key|apikey|access[_\-]?key|account[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|credentials?`)
+// secretWord finds the words that make a key name a secret, for settingOf: DB_PASS_FILE and
+// SSH_KEY_PATH are settings, as DB_PASSWORD_FILE is.
+var secretWord = lazy(`(?i)[_\-](?:pass|pwd|key)\b|[_\-](?:pass|pwd|key)[_\-]|password|passwd|secret|token|api[_\-]?key|apikey|access[_\-]?key|account[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|credentials?`)
+
+// namedSecret finds the words that name a secret on their own, which a generic KEY doesn't.
+var namedSecret = lazy(`(?i)password|passwd|secret|token|api[_\-]?key|apikey|access[_\-]?key|account[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|credentials?|[_\-](?:pass|pwd)(?:$|[_\-])`)
+
+// generated reports a value that looks like a generated key rather than a name, a path or a
+// number: base64:..., 32 or more hex digits, or 16 or more characters of a key's alphabet that
+// mix upper case, lower case and digits.
+func generated(v string) bool {
+	if strings.HasPrefix(v, "base64:") || hexKey.get().MatchString(v) {
+		return true
+	}
+	return keyAlphabet.get().MatchString(v) && !notMixed("", nil, v)
+}
+
+var (
+	hexKey      = lazy(`^[0-9a-fA-F]{32,}$`)
+	keyAlphabet = lazy(`^[A-Za-z0-9+=_\-][A-Za-z0-9+/=_\-]{15,}$`)
+)
 
 // settings are words that, after the secret word, make a key name a setting about the secret
 // rather than the secret: PASSWORD_MIN_LENGTH, TOKEN_TTL, DB_PASSWORD_FILE.
@@ -310,6 +342,19 @@ func portNotPassword(_ string, _ []int, v string) bool {
 		i++
 	}
 	return i > 0 && i < len(v) && v[i] == '/'
+}
+
+// flagWithoutValue vetoes flags that take no value, so the next word isn't one: --no-password,
+// --ask-password, --prompt-password, gh auth login --with-token < file. It also vetoes a
+// redirection in place of a value, and docker build --secret id=…,src=… (see dockerSecretSpec).
+func flagWithoutValue(s string, m []int, v string) bool {
+	flag := strings.ToLower(s[m[0]:min(m[1], m[0]+10)])
+	for _, p := range []string{"--no-", "--ask-", "--prompt-", "--with-"} {
+		if strings.HasPrefix(flag, p) {
+			return true
+		}
+	}
+	return strings.Trim(v, "<>") == "" || dockerSecretSpec(s, m, v)
 }
 
 // dockerSecretSpec vetoes docker build --secret id=…,src=…, which names a secret file.
