@@ -354,7 +354,9 @@ func portNotPassword(_ string, _ []int, v string) bool {
 // --ask-password, --prompt-password, gh auth login --with-token < file, and any flag followed
 // by another flag, as in mysql --skip-password -u root. It also vetoes a redirection in place of
 // a value, and docker build --secret id=…,src=… (see dockerSecretSpec). A value given with = or
-// in quotes is the flag's, even when it starts with "-".
+// in quotes is the flag's, even when it starts with "-", and so is a bare value that starts with
+// "-" but doesn't look like a flag, as a generated key can: --api-key -Hk3pQ9xZ2mLw7Rt5Vb8N
+// (QA3-REC-3).
 func flagWithoutValue(s string, m []int, v string) bool {
 	flag := strings.ToLower(s[m[0]:min(m[1], m[0]+10)])
 	for _, p := range []string{"--no-", "--ask-", "--prompt-", "--with-"} {
@@ -363,11 +365,20 @@ func flagWithoutValue(s string, m []int, v string) bool {
 		}
 	}
 	// m[6] is where the pattern's third group, a value without quotes, starts.
-	if bare := m[6]; bare > 0 && strings.HasPrefix(v, "-") && s[bare-1] != '=' {
+	if bare := m[6]; bare > 0 && s[bare-1] != '=' && looksLikeFlag(v) {
 		return true
 	}
 	return strings.Trim(v, "<>") == "" || dockerSecretSpec(s, m, v)
 }
+
+// looksLikeFlag reports a word that reads as a command-line flag rather than a key: "-", "--",
+// -u, -uroot, -P3306, --verbose or --host=db.example.com, but not a generated value such as
+// -Hk3pQ9xZ2mLw7Rt5Vb8N, whose letters after the first mix upper and lower case.
+func looksLikeFlag(v string) bool {
+	return flagWord.get().MatchString(v) && !generated(strings.TrimLeft(v, "-"))
+}
+
+var flagWord = lazy(`^(?:--?|--?[A-Za-z][a-z0-9-]*|--[A-Za-z][a-z0-9-]*=.*)$`)
 
 // dockerSecretSpec vetoes docker build --secret id=…,src=…, which names a secret file.
 func dockerSecretSpec(_ string, _ []int, v string) bool {

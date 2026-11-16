@@ -283,7 +283,7 @@ func TestRound3Redaction(t *testing.T) {
 
 // Expressions are compiled when first used, not at start-up; every one of them compiles.
 func TestEveryExpressionCompiles(t *testing.T) {
-	for _, l := range []*lazyRE{keyValue, messageArg, varRef, secretWord, namedSecret, hexKey, keyAlphabet} {
+	for _, l := range []*lazyRE{keyValue, messageArg, varRef, secretWord, namedSecret, hexKey, keyAlphabet, flagWord} {
 		l.get()
 	}
 	for _, p := range patterns {
@@ -381,6 +381,49 @@ func TestRound5Redaction(t *testing.T) {
 		"mysqldump --skip-password -h db.example.com shop",
 		"pg_dump --no-password -h db.example.com app",
 		"git commit -m 'mongosh -p is how you pass it'",
+	} {
+		if out, n := String(in); out != in || n != 0 {
+			t.Errorf("%q -> %q (%d)", in, out, n)
+		}
+	}
+}
+
+// QA3-REC-3: a secret given after a space to a password, token, secret or key flag is stripped
+// even when it starts with "-", as about 1 in 64 URL-safe base64 keys does. Only a value that
+// reads as a flag (-u, -uroot, -P3306, --verbose, --host=…, "-" or "--") means the flag before
+// it took none.
+func TestFlagValueThatStartsWithADash(t *testing.T) {
+	key := "-Hk3pQ9xZ2mLw7Rt5Vb8N"
+	pass := "-Zq7n3HRc" + fake("", 6, alnum) + "d1"
+	hex := "-a" + fake("", 39, hexchars)
+	upperFirst := "-A" + fake("", 6, "abcdefghjkmnpqrstuvwxyz") + "3" + fake("", 8, "abcdefghjkmnpqrstuvwxyz")
+	digitFirst := "-7" + fake("", 6, "abcdefghjkmnpqrstuvwxyz")
+	for _, c := range []struct{ in, secret string }{
+		{"deploy --api-key " + key + " sync", key},
+		{"app --client-secret " + key, key},
+		{"app --secret " + key, key},
+		{"tool --password " + pass + " sync", pass},
+		{"tool --access-key " + key + " --region us-east-1", key},
+		{"tool --db-password " + pass, pass},
+		{"tool --api-key " + hex, hex},
+		{"tool --client-secret " + upperFirst + " sync", upperFirst},
+		{"tool --secret " + digitFirst + " sync", digitFirst},
+	} {
+		out, n := String(c.in)
+		if strings.Contains(out, c.secret) || n == 0 {
+			t.Errorf("%q -> %q (%d)", c.in, out, n)
+		}
+	}
+	for _, in := range []string{
+		"mysql --skip-password -u root shop",
+		"mysql --skip-password -uroot -P3306 shop",
+		"mysql --skip-password -h db.example.com shop",
+		"mysql --skip-password --verbose shop",
+		"mysql --skip-password --host=db.example.com --port=3306 shop",
+		"mysql --skip-password --default-character-set=utf8mb4 shop",
+		"docker run --name mongo -p 27017:27017 -d mongo:7",
+		"tool --token - < token.txt",
+		"tool --token -- run",
 	} {
 		if out, n := String(in); out != in || n != 0 {
 			t.Errorf("%q -> %q (%d)", in, out, n)
