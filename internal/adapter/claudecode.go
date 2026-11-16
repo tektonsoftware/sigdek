@@ -154,11 +154,15 @@ func claudeCodeAction(name string, rawInput json.RawMessage, cwd string) actionF
 		// Monitor runs its command in the shell and watches the output, as a shell command
 		// (BB-RULE-1). Without a command it watches a WebSocket, named by "ws": that is a web
 		// action with that URL, so URL rules see it and the record shows where it connected.
-		if shellCommand(&f, in); f.Kind != "shell" {
-			if ws, ok := in["ws"].(string); ok && ws != "" {
-				f.Kind, f.URL = "web", ws
+		// Claude Code sends ws as {"url": ..., "protocols": [...]} (QA3-REC-1); a plain URL
+		// string is read too.
+		if c, _ := in["command"].(string); c == "" {
+			if u := webSocketURL(in["ws"]); u != "" {
+				f.Kind, f.URL = "web", u
+				break
 			}
 		}
+		shellCommand(&f, in)
 	case "Read", "NotebookRead":
 		f.Kind, f.Path = "file_read", str(in, "file_path", "notebook_path")
 	case "Grep":
@@ -191,6 +195,18 @@ func shellCommand(f *actionFields, in map[string]any) {
 	if c, ok := in["command"].(string); ok {
 		f.Kind, f.Command = "shell", c
 	}
+}
+
+// webSocketURL reads the address from Monitor's ws input: an object with a string "url", as
+// Claude Code sends it, or the URL as a string.
+func webSocketURL(ws any) string {
+	switch v := ws.(type) {
+	case string:
+		return v
+	case map[string]any:
+		return str(v, "url")
+	}
+	return ""
 }
 
 // splitMCP parses "mcp__<server>__<tool>".

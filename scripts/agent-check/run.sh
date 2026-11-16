@@ -8,7 +8,8 @@
 #   scripts/agent-check/run.sh plugin   Claude Code, with this repository's plugin (--plugin-dir)
 #   scripts/agent-check/run.sh cursor   Cursor's terminal agent (`agent`), with `init`'s hooks
 #   scripts/agent-check/run.sh tools    no session: every Claude Code tool that takes a command
-#                                       meets the Block rule through `init`'s hooks (tools.mjs)
+#                                       meets the Block rule through `init`'s hooks, and Monitor
+#                                       names its WebSocket as ws.url (tools.mjs)
 #
 # Needs `claude` (or `agent`) on PATH and signed in: ANTHROPIC_API_KEY or CURSOR_API_KEY in CI
 # (tools needs `claude` only, and no key).

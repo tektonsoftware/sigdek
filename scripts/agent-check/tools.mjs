@@ -8,7 +8,9 @@
 // needs no API key and costs nothing. Every tool whose input has a string `command`, MCP tools
 // aside, is then sent to the hook as a PreToolUse with a command the Block rule in
 // SIGDEK_HOME/rules.json refuses (see run.sh); the hook must refuse it and record it as a shell
-// action. Prints one line per check and exits 1 if any failed.
+// action. It also checks that Monitor still names the WebSocket it watches as ws.url, the field
+// the hook reads so URL rules see it (QA3-REC-1). Prints one line per check and exits 1 if any
+// failed.
 //
 //   node scripts/agent-check/tools.mjs <SIGDEK_HOME> <scratch repo> <hook command and its arguments>
 //   e.g. node tools.mjs "$SIGDEK_HOME" "$repo" sh "$repo/.sigdek/launch.sh" hook claude-code
@@ -112,6 +114,22 @@ const takesCommand = (t) => {
 const commandTools = all.filter(takesCommand).map((t) => t.name).sort();
 console.log(`Claude Code's tools: ${all.map((t) => t.name + (takesCommand(t) ? " [command]" : "")).sort().join(", ")}`);
 check(commandTools.includes("Bash"), "the list includes Bash, with its command", "a list without it isn't Claude Code's");
+
+// Without a command, Monitor watches a WebSocket given as ws: {url, protocols?}. The hook reads
+// ws.url (webSocketURL in internal/adapter/claudecode.go) so URL rules judge that address; if the
+// address moves, such a call gets past them unseen.
+const monitor = all.find((t) => t.name === "Monitor");
+if (monitor) {
+  const ws = monitor.input_schema?.properties?.ws;
+  check(
+    ws?.type === "object" && ws?.properties?.url?.type === "string",
+    "Claude Code's Monitor tool names its WebSocket as ws.url, where the hook reads it",
+    `ws is now ${ws ? JSON.stringify({ ...ws, description: undefined }).slice(0, 300) : "gone"}; ` +
+      "update the Monitor case in internal/adapter/claudecode.go and release the recorder",
+  );
+} else {
+  console.log("--   Claude Code sent no Monitor tool, so its WebSocket input wasn't checked");
+}
 
 const records = () => {
   const dir = join(home, "log");
