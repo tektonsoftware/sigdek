@@ -128,9 +128,11 @@ const mongoCommand = `(?:^|[;&|(\x60\n]|\s--\s|\bexec\s(?:[^|;&\n]*?\s)?)\s*(?:s
 var keyValue = lazy(`(?i)(^|[^A-Za-z0-9_\-])([A-Za-z0-9_\-]*(?:password|passwd|secret|token|api[_\-]?key|apikey|access[_\-]?key|account[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|credentials?)[A-Za-z0-9_\-]*|[A-Za-z0-9_\-]*[A-Za-z0-9][_\-](?:pass|pwd|key)(?:[_\-][A-Za-z0-9_\-]*)?)(["']?)\s*[=:]\s*(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`)
 
 // keyValue011 is 0.1.1's key=value expression: keyValue without the names made only of a generic
-// KEY, PASS or PWD. Its matches in the same text are judged as keyValue's are and stripped with
-// them, so a pair 0.1.1 stripped is still stripped where a wider match went past it without
-// stripping, as in --set-env-vars "CACHE_KEY=prod,DB_PASSWORD=VALUE" (QA7-REC-1).
+// KEY, PASS or PWD. Its matches in the same text are judged as 0.1.1 judged them (settingOf011)
+// and stripped with keyValue's, so a pair 0.1.1 stripped is still stripped where a wider match, or
+// one read as a setting only since 0.1.2, went past it without stripping, as in
+// --set-env-vars "CACHE_KEY=prod,DB_PASSWORD=VALUE" (QA7-REC-1) or
+// --set-env-vars SECRET_KEY_FILE=/k,DB_PASSWORD=VALUE (QA8-REC-1).
 var keyValue011 = lazy(`(?i)(^|[^A-Za-z0-9_\-])([A-Za-z0-9_\-]*(?:password|passwd|secret|token|api[_\-]?key|apikey|access[_\-]?key|account[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|credentials?)[A-Za-z0-9_\-]*)(["']?)\s*[=:]\s*(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`)
 
 // messageArg finds the text of -m/--message arguments (git commit -am "...", git tag -m '...').
@@ -301,7 +303,10 @@ func matches(s string, p pattern) [][]int {
 }
 
 func replaceKeyValues(s string, spans [][2]int, total *int) string {
-	idx := append(keyValue.get().FindAllStringSubmatchIndex(s, -1), keyValue011.get().FindAllStringSubmatchIndex(s, -1)...)
+	idx := keyValue.get().FindAllStringSubmatchIndex(s, -1)
+	for _, m := range keyValue011.get().FindAllStringSubmatchIndex(s, -1) {
+		idx = append(idx, append(m, from011)) // an odd length marks 0.1.1's match, judged as 0.1.1 judged it
+	}
 	if idx == nil {
 		return s
 	}
@@ -334,7 +339,11 @@ func replaceKeyValues(s string, spans [][2]int, total *int) string {
 			continue // grep password= config/: the word ends at =, and the next word isn't its value
 		}
 		v, key := s[start:end], s[keyStart:m[5]]
-		if v == Marker || varRef.get().MatchString(v) || settingOf(key) || placeholder[strings.ToLower(v)] {
+		setting := settingOf(key)
+		if len(m)%2 == 1 {
+			setting = settingOf011(key)
+		}
+		if v == Marker || varRef.get().MatchString(v) || setting || placeholder[strings.ToLower(v)] {
 			continue
 		}
 		if !namedSecret.get().MatchString(key) && !generated(v) {
@@ -356,6 +365,27 @@ func replaceKeyValues(s string, spans [][2]int, total *int) string {
 // secretWord finds the words that make a key name a secret, for settingOf: DB_PASS_FILE and
 // SSH_KEY_PATH are settings, as DB_PASSWORD_FILE is.
 var secretWord = lazy(`(?i)[_\-](?:pass|pwd|key)\b|[_\-](?:pass|pwd|key)[_\-]|password|passwd|secret|token|api[_\-]?key|apikey|access[_\-]?key|account[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|credentials?`)
+
+// secretWord011 and settingOf011 are 0.1.1's: a key is a setting about a secret only when the word
+// after one of these names (not a generic _KEY, _PASS or _PWD) is in settings. replaceKeyValues
+// judges 0.1.1's own matches with them, so SECRET_KEY_FILE=/k is stripped as 0.1.1 stripped it.
+var secretWord011 = lazy(`(?i)password|passwd|secret|token|api[_\-]?key|apikey|access[_\-]?key|account[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|credentials?`)
+
+func settingOf011(key string) bool {
+	loc := secretWord011.get().FindAllStringIndex(key, -1)
+	if loc == nil {
+		return false
+	}
+	rest := strings.TrimLeft(key[loc[len(loc)-1][1]:], "_-")
+	if i := strings.IndexAny(rest, "_-"); i >= 0 {
+		rest = rest[:i]
+	}
+	return settings[strings.ToLower(rest)]
+}
+
+// from011 is appended to a match of keyValue011, giving it an odd length, so replaceKeyValues can
+// tell it from keyValue's after sorting.
+const from011 = -1
 
 // namedSecret finds the words that name a secret on their own, which a generic KEY doesn't.
 var namedSecret = lazy(`(?i)password|passwd|secret|token|api[_\-]?key|apikey|access[_\-]?key|account[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|credentials?|[_\-](?:pass|pwd)(?:$|[_\-])`)

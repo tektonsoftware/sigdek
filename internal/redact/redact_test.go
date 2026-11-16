@@ -649,6 +649,14 @@ func TestSecretPairAfterAGenericKeyPair(t *testing.T) {
 		// start, so the earlier secret isn't written out before it's judged.
 		{`gcloud run deploy api --set-env-vars "CACHE_KEY=prod,DB_PASSWORD=hunter2x" --update-secrets API_KEY=Zq7nHRcK2pLw9x`, "hunter2x"},
 		{`gcloud run deploy api --set-env-vars "CACHE_KEY=prod,DB_PASSWORD=hunter2x" --update-secrets API_KEY=Zq7nHRcK2pLw9x`, "Zq7nHRcK2pLw9x"},
+		// QA8-REC-1: a key read as a setting only since 0.1.2 (SECRET_KEY_FILE) is judged as 0.1.1
+		// judged it when 0.1.1's expression matches it, so the pair after it is stripped too.
+		{`gcloud run deploy api --set-env-vars SECRET_KEY_FILE=/secrets/django-key,DB_PASSWORD=hunter2x`, "hunter2x"},
+		{`aws lambda update-function-configuration --function-name api --environment "Variables={JWT_SECRET_KEY_PATH=/opt/jwt.pem,DB_PASSWORD=hunter2x}"`, "hunter2x"},
+		{`helm upgrade --install api ./chart --set app.secret_key_file=/etc/app/key,postgresql.auth.password=hunter2x`, "hunter2x"},
+		{`gcloud run deploy api --set-env-vars=^:^SECRET_KEY_PATH=/k:API_TOKEN=Zq7nHRcK2pLw9x`, "Zq7nHRcK2pLw9x"},
+		{`gcloud run deploy api --set-env-vars SECRET_KEY_LENGTH=50,DB_PASSWORD=hunter2x`, "hunter2x"},
+		{`gcloud run deploy api --set-env-vars TOKEN_KEY_TYPE=RS256,CLIENT_SECRET=hunter2x`, "hunter2x"},
 	} {
 		if out, n := String(c.in); strings.Contains(out, c.secret) || n == 0 {
 			t.Errorf("%q -> %q (%d)", c.in, out, n)
@@ -665,9 +673,26 @@ func TestSecretPairAfterAGenericKeyPair(t *testing.T) {
 	}
 }
 
-// QA7-REC-4: matches from the two flag expressions are taken in the order their values start,
-// and a value that starts inside one already stripped takes the rest of it, so neither a later
-// flag nor a value straddling a quote keeps a secret 0.1.1 stripped.
+// QA8-REC-3: a pair both key=value expressions match is counted once, and a value that starts
+// inside one already stripped takes the rest of it.
+func TestMergedKeyValueCounts(t *testing.T) {
+	for _, c := range []struct {
+		in, want string
+		n        int
+	}{
+		{"DB_PASSWORD=hunter2x ./run", "DB_PASSWORD=[redacted] ./run", 1},
+		{`gcloud run deploy api --set-env-vars "CACHE_KEY=prod,DB_PASSWORD=hunter2x"`, `gcloud run deploy api --set-env-vars "CACHE_KEY=prod,DB_PASSWORD=[redacted]"`, 1},
+		{`APP_KEY="base64:Zq7nHRcK2pLw9xAb token='abc" tail' end`, `APP_KEY="[redacted]' end`, 1},
+	} {
+		if out, n := String(c.in); out != c.want || n != c.n {
+			t.Errorf("%q -> %q (%d), want %q (%d)", c.in, out, n, c.want, c.n)
+		}
+	}
+}
+
+// QA7-REC-4: a later flag and a value straddling a quote keep no secret 0.1.1 stripped. A flag
+// match can't start inside another's flag name, so sorting the two flag expressions' matches by
+// match or by value gives the same order (QA8-REC-2); this guards that and the straddle.
 func TestMergedFlagMatchesInOrder(t *testing.T) {
 	for _, c := range []struct{ in, secret string }{
 		{`tool --no-password "curl --token Zq7nHRcK2pLw9x" --password hunter22`, "Zq7nHRcK2pLw9x"},
