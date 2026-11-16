@@ -187,7 +187,7 @@ func TestDocsRedaction(t *testing.T) {
 		{"redis-cli -h cache.example.com -a " + pass + " ping", pass},
 		{"mongosh mongodb://db.example.com -u admin -p " + pass, pass},
 		{"vault login " + vault, vault},
-		{"git clone https://" + hex + "@github.com/acme/api.git", hex},
+		{"git clone https://" + hex + "@github.com/larkspur-labs-example/api.git", hex},
 	} {
 		res := post(dir, "Bash", map[string]any{"command": c.command}, ctx())
 		if line := sealed(t, res.Record); strings.Contains(string(line), c.secret) || res.Record.Redactions == 0 {

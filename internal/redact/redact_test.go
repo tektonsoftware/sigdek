@@ -320,7 +320,7 @@ func TestRound4Redaction(t *testing.T) {
 		{"gh-tool --github-token " + key + " sync", key},
 		{"vault login " + vault, vault},
 		{"VAULT_ADDR=https://vault.example.com vault kv get -token=" + vault + " secret/app", vault},
-		{"git remote set-url origin https://" + hex + "@github.com/acme/api.git", hex},
+		{"git remote set-url origin https://" + hex + "@github.com/larkspur-labs-example/api.git", hex},
 	} {
 		out, n := String(c.in)
 		if strings.Contains(out, c.secret) || n == 0 {
@@ -334,7 +334,7 @@ func TestRound4Redaction(t *testing.T) {
 		"export DB_PASS_FILE=/run/secrets/db", "export SSH_KEY_PATH=~/.ssh/id_rsa", "FIRST_PASS=true ./build.sh",
 		"aws dynamodb query --key-condition-expression 'pk = :v'",
 		"mongosh -u admin -p --authenticationDatabase admin", "redis-cli -a $REDIS_PASSWORD ping",
-		"pytest --pass-through x", "curl https://user@example.com/x", "git clone https://git@example.com/acme/api.git",
+		"pytest --pass-through x", "curl https://user@example.com/x", "git clone https://git@example.com/larkspur-labs/api.git",
 		"pg_dump --no-password -h db.example.com app", "psql -w --no-password app",
 		"ansible-playbook site.yml --ask-vault-password", "gh auth login --with-token < token.txt",
 		"aws secretsmanager get-secret-value --secret-id prod/db", "docker login --password-stdin ghcr.io",
