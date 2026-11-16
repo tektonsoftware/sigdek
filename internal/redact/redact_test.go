@@ -607,6 +607,81 @@ func strippedBytes(t *testing.T, in, out string) []bool {
 	return got
 }
 
+// QA7-REC-1: a secret pair after a pair named only by a generic KEY, in a comma list or a quoted
+// value, is stripped, as 0.1.1 stripped it: the wider key=value expression's match runs past it
+// without stripping, and 0.1.1's expression, run over the same text, finds it.
+func TestSecretPairAfterAGenericKeyPair(t *testing.T) {
+	wrappers := []string{
+		`gcloud run deploy api --set-env-vars "%s"`,
+		`gcloud run deploy api --update-env-vars %s`,
+		`aws lambda update-function-configuration --function-name api --environment "Variables={%s}"`,
+		`helm upgrade --install api ./chart --set %s`,
+		`docker run -e '%s' app`,
+	}
+	generic := []string{"CACHE_KEY=prod", "SORT_KEY=name", "PRIMARY_KEY=id", "service.cache_key=v1", "STORAGE_KEY=users-v2"}
+	secrets := []struct{ pair, secret string }{
+		{"DB_PASSWORD=hunter2x", "hunter2x"},
+		{"API_TOKEN=Zq7nHRcK2pLw9x", "Zq7nHRcK2pLw9x"},
+		{"postgresql.auth.password=Lark5pur99", "Lark5pur99"},
+		{"CLIENT_SECRET=k3pq9xz2mlw7", "k3pq9xz2mlw7"},
+	}
+	for _, w := range wrappers {
+		for _, g := range generic {
+			for _, sc := range secrets {
+				for _, list := range []string{g + "," + sc.pair, g + "," + sc.pair + ",REGION=us-east-1"} {
+					in := strings.Replace(w, "%s", list, 1)
+					out, n := String(in)
+					if strings.Contains(out, sc.secret) || n == 0 {
+						t.Errorf("%q -> %q (%d)", in, out, n)
+					}
+					if !strings.Contains(out, g) {
+						t.Errorf("%q -> %q changed %q, which names no secret", in, out, g)
+					}
+				}
+			}
+		}
+	}
+	for _, c := range []struct{ in, secret string }{
+		{`gcloud run deploy api --set-env-vars=^:^CACHE_KEY=prod:DB_PASSWORD=hunter2x`, "hunter2x"},
+		{`export STORAGE_KEY="DefaultEndpointsProtocol=https;AccountName=larkspur;AccountKey=Zq7nHRcK2pLw9xHk3pQ9xZ2mLw7Rt5Vb8N=="`, "Zq7nHRcK2pLw9xHk3pQ9xZ2mLw7Rt5Vb8N"},
+		{`CACHE_KEY="session token=Zq7nHRcK2pLw9x" ./run.sh`, "Zq7nHRcK2pLw9x"},
+		// A stripped pair after the swallowed one: the matches are taken in the order their values
+		// start, so the earlier secret isn't written out before it's judged.
+		{`gcloud run deploy api --set-env-vars "CACHE_KEY=prod,DB_PASSWORD=hunter2x" --update-secrets API_KEY=Zq7nHRcK2pLw9x`, "hunter2x"},
+		{`gcloud run deploy api --set-env-vars "CACHE_KEY=prod,DB_PASSWORD=hunter2x" --update-secrets API_KEY=Zq7nHRcK2pLw9x`, "Zq7nHRcK2pLw9x"},
+	} {
+		if out, n := String(c.in); strings.Contains(out, c.secret) || n == 0 {
+			t.Errorf("%q -> %q (%d)", c.in, out, n)
+		}
+	}
+	for _, in := range []string{
+		`gcloud run deploy api --set-env-vars "SORT_KEY=name,REGION=us-east-1"`,
+		`helm upgrade --install api ./chart --set service.cache_key=v1,replicaCount=2`,
+		`aws lambda update-function-configuration --environment "Variables={PRIMARY_KEY=id,CACHE_KEY=users-v2}"`,
+	} {
+		if out, n := String(in); out != in || n != 0 {
+			t.Errorf("%q -> %q (%d)", in, out, n)
+		}
+	}
+}
+
+// QA7-REC-4: matches from the two flag expressions are taken in the order their values start,
+// and a value that starts inside one already stripped takes the rest of it, so neither a later
+// flag nor a value straddling a quote keeps a secret 0.1.1 stripped.
+func TestMergedFlagMatchesInOrder(t *testing.T) {
+	for _, c := range []struct{ in, secret string }{
+		{`tool --no-password "curl --token Zq7nHRcK2pLw9x" --password hunter22`, "Zq7nHRcK2pLw9x"},
+		{`tool --no-password "curl --token Zq7nHRcK2pLw9x" --password hunter22`, "hunter22"},
+		{`tool --db-password "a --token 'b" Zq7nHRcK2pLw9x'`, "Zq7nHRcK2pLw9x"},
+		{`tool --DB-PASSWORD "a --TOKEN Zq7nHRcK2pLw9x" --Password hunter22`, "Zq7nHRcK2pLw9x"},
+		{`tool --DB-PASSWORD "a --TOKEN Zq7nHRcK2pLw9x" --Password hunter22`, "hunter22"},
+	} {
+		if out, n := String(c.in); strings.Contains(out, c.secret) || n == 0 {
+			t.Errorf("%q -> %q (%d)", c.in, out, n)
+		}
+	}
+}
+
 // QA5-REC-1: the flag search that lets one flag be taken as another's value stays linear. Chains
 // of flags whose values run to the next blank took seconds at 64 KB when every match was searched
 // again from its value; 0.1.1 takes about 30 ms.

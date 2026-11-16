@@ -127,6 +127,12 @@ const mongoCommand = `(?:^|[;&|(\x60\n]|\s--\s|\bexec\s(?:[^|;&\n]*?\s)?)\s*(?:s
 // only when its value looks generated (see generated): SORT_KEY=name stays.
 var keyValue = lazy(`(?i)(^|[^A-Za-z0-9_\-])([A-Za-z0-9_\-]*(?:password|passwd|secret|token|api[_\-]?key|apikey|access[_\-]?key|account[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|credentials?)[A-Za-z0-9_\-]*|[A-Za-z0-9_\-]*[A-Za-z0-9][_\-](?:pass|pwd|key)(?:[_\-][A-Za-z0-9_\-]*)?)(["']?)\s*[=:]\s*(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`)
 
+// keyValue011 is 0.1.1's key=value expression: keyValue without the names made only of a generic
+// KEY, PASS or PWD. Its matches in the same text are judged as keyValue's are and stripped with
+// them, so a pair 0.1.1 stripped is still stripped where a wider match went past it without
+// stripping, as in --set-env-vars "CACHE_KEY=prod,DB_PASSWORD=VALUE" (QA7-REC-1).
+var keyValue011 = lazy(`(?i)(^|[^A-Za-z0-9_\-])([A-Za-z0-9_\-]*(?:password|passwd|secret|token|api[_\-]?key|apikey|access[_\-]?key|account[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|credentials?)[A-Za-z0-9_\-]*)(["']?)\s*[=:]\s*(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`)
+
 // messageArg finds the text of -m/--message arguments (git commit -am "...", git tag -m '...').
 var messageArg = lazy(`(?:^|\s)(?:-[a-zA-Z]*m|--message)(?:\s+|=)("(?:[^"\\]|\\.)*"|'[^']*')`)
 
@@ -193,7 +199,7 @@ func replace(s string, p pattern, total *int) string {
 	idx := matches(s, p)
 	if p.also != nil {
 		idx = append(idx, p.also.get().FindAllStringSubmatchIndex(s, -1)...)
-		sort.SliceStable(idx, func(i, j int) bool { return idx[i][0] < idx[j][0] })
+		byValue(idx, 1)
 	}
 	if idx == nil {
 		return s
@@ -248,6 +254,21 @@ func replace(s string, p pattern, total *int) string {
 	return b.String()
 }
 
+// byValue sorts matches from two expressions by where their value starts (the first group from
+// group first on that took part), so text before a stripped value is written out only once it's
+// known that no other match strips it.
+func byValue(idx [][]int, first int) {
+	at := func(m []int) int {
+		for g := first; 2*g < len(m); g++ {
+			if m[2*g] >= 0 {
+				return m[2*g]
+			}
+		}
+		return m[0]
+	}
+	sort.SliceStable(idx, func(i, j int) bool { return at(idx[i]) < at(idx[j]) })
+}
+
 // matches returns p's matches in s, as FindAllStringSubmatchIndex does. With p.overlap, a match
 // whose bare value (its last group) follows a blank and starts with "-" may be another flag taken
 // as this one's value, as in --skip-password --password VALUE, so the next search starts at that
@@ -280,10 +301,11 @@ func matches(s string, p pattern) [][]int {
 }
 
 func replaceKeyValues(s string, spans [][2]int, total *int) string {
-	idx := keyValue.get().FindAllStringSubmatchIndex(s, -1)
+	idx := append(keyValue.get().FindAllStringSubmatchIndex(s, -1), keyValue011.get().FindAllStringSubmatchIndex(s, -1)...)
 	if idx == nil {
 		return s
 	}
+	byValue(idx, 4)
 	var b strings.Builder
 	last := 0
 	for _, m := range idx {
@@ -317,6 +339,10 @@ func replaceKeyValues(s string, spans [][2]int, total *int) string {
 		}
 		if !namedSecret.get().MatchString(key) && !generated(v) {
 			continue // SORT_KEY=name: only a generic KEY names it, and the value isn't a key's
+		}
+		if start < last {
+			last = max(last, end) // inside a value already stripped: the stripped text runs on to its end
+			continue
 		}
 		b.WriteString(s[last:start])
 		b.WriteString(Marker)
