@@ -36,10 +36,10 @@ func ClaudeCode(raw []byte, ctx Context) Result {
 		return r
 	}
 	toolInput := p["tool_input"]
-	action := func(r *event.Record) *event.Action {
-		a, view, n := buildAction(claudeCodeAction(p.str("tool_name"), toolInput), toolInput, cwd)
+	action := func(r *event.Record) []*event.Action {
+		a, views, n := buildAction(claudeCodeAction(p.str("tool_name"), toolInput, cwd), toolInput, cwd)
 		r.Action, r.Redactions = a, n
-		return view
+		return views
 	}
 
 	switch name := p.str("hook_event_name"); name {
@@ -56,22 +56,22 @@ func ClaudeCode(raw []byte, ctx Context) Result {
 	case "PreToolUse":
 		// Most of these write nothing: an allowed action is recorded by PostToolUse once it has
 		// run, so the record (and its redaction) is built only for a denial or a setup change.
-		f := claudeCodeAction(p.str("tool_name"), toolInput)
-		view := actionView(f, cwd)
-		deny := ctx.Rules.Match(view, rules.Deny)
+		f := claudeCodeAction(p.str("tool_name"), toolInput, cwd)
+		views := actionViews(f, cwd)
+		deny := ctx.Rules.MatchAny(views, rules.Deny)
 		var setup *rules.Rule
 		if deny == nil {
 			// A change to SigDek's own setup may leave nothing to record it afterwards.
-			if setup = ctx.Rules.MatchSetup(view); setup == nil {
+			if setup = ctx.Rules.MatchSetupAny(views); setup == nil {
 				return Result{}
 			}
 		}
 		r := rec("action")
-		r.Action, r.Redactions = storedAction(f, view, toolInput)
+		r.Action, r.Redactions = storedAction(f, views[0], toolInput)
 		if deny == nil {
 			return preRecord(r, setup)
 		}
-		blocked(r, view, deny, toolInput)
+		blocked(r, views[0], deny, toolInput)
 		out, _ := json.Marshal(map[string]any{"hookSpecificOutput": map[string]any{
 			"hookEventName":            "PreToolUse",
 			"permissionDecision":       "deny",
@@ -80,7 +80,7 @@ func ClaudeCode(raw []byte, ctx Context) Result {
 		return Result{Record: r, Stdout: append(out, '\n')}
 	case "PostToolUse", "PostToolUseFailure", "PermissionDenied":
 		r := rec("action")
-		view := action(r)
+		views := action(r)
 		switch name {
 		case "PostToolUse":
 			r.Outcome = "ran"
@@ -91,7 +91,7 @@ func ClaudeCode(raw []byte, ctx Context) Result {
 		}
 		// A setup change was also recorded as attempted at PreToolUse; this is its result.
 		r.DurationMS = durationMS(p.num("duration_ms"))
-		applyRule(r, view, ctx.Rules)
+		applyRule(r, views, ctx.Rules)
 		return Result{Record: r}
 	case "SubagentStart", "SubagentStop":
 		evt := "subagent_start"
@@ -140,7 +140,7 @@ func fromCursor(p hookInput) bool {
 	return conversation && generation
 }
 
-func claudeCodeAction(name string, rawInput json.RawMessage) actionFields {
+func claudeCodeAction(name string, rawInput json.RawMessage, cwd string) actionFields {
 	in := decodeObject(rawInput)
 	f := actionFields{Kind: "other", Name: name}
 	switch name {
@@ -152,7 +152,11 @@ func claudeCodeAction(name string, rawInput json.RawMessage) actionFields {
 		shellCommand(&f, in)
 	case "Read", "NotebookRead":
 		f.Kind, f.Path = "file_read", str(in, "file_path", "notebook_path")
-	case "Grep", "Glob", "LS":
+	case "Grep":
+		searchFields(&f, str(in, "path"), str(in, "glob"), cwd)
+	case "Glob":
+		searchFields(&f, str(in, "path"), str(in, "pattern"), cwd)
+	case "LS":
 		f.Kind, f.Path = "file_read", str(in, "path")
 	case "Edit", "MultiEdit", "Write", "NotebookEdit":
 		f.Kind, f.Path = "file_edit", str(in, "file_path", "notebook_path")

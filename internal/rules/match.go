@@ -20,28 +20,50 @@ import (
 // read both forms whole, however long, so padding can't hide a command from them. Flag rules
 // only label what is recorded, and read at most FlagScanLimit bytes of each (see View).
 func (s Set) Match(a *event.Action, effect string) *Rule {
-	return s.match(a, effect, nil)
+	return s.match([]*event.Action{a}, effect, nil)
+}
+
+// MatchAny is Match for an action rules see in more than one form, such as a search named
+// both by the folder it looks in and by that folder joined with its glob: it returns the first
+// rule, in rule order, that matches any of the forms.
+func (s Set) MatchAny(forms []*event.Action, effect string) *Rule {
+	return s.match(forms, effect, nil)
 }
 
 // MatchSetup returns the first Flag rule about SigDek's own setup (an id starting
 // "sigdek-setup") that matches the action.
 func (s Set) MatchSetup(a *event.Action) *Rule {
-	return s.match(a, Flag, func(r *Rule) bool { return IsSetupRule(r.ID) })
+	return s.MatchSetupAny([]*event.Action{a})
+}
+
+// MatchSetupAny is MatchSetup for an action in more than one form (see MatchAny).
+func (s Set) MatchSetupAny(forms []*event.Action) *Rule {
+	return s.match(forms, Flag, func(r *Rule) bool { return IsSetupRule(r.ID) })
 }
 
 // IsSetupRule reports whether a rule flags changes to SigDek's own setup, which can switch
 // the recorder off, so such an action is recorded before it runs.
 func IsSetupRule(id string) bool { return strings.HasPrefix(id, "sigdek-setup") }
 
-func (s Set) match(a *event.Action, effect string, only func(*Rule) bool) *Rule {
-	if a == nil {
+func (s Set) match(forms []*event.Action, effect string, only func(*Rule) bool) *Rule {
+	subs := make([]subject, 0, len(forms))
+	for _, a := range forms {
+		if a != nil {
+			subs = append(subs, subject{a: a, whole: effect == Deny})
+		}
+	}
+	if len(subs) == 0 {
 		return nil
 	}
-	sub := &subject{a: a, whole: effect == Deny}
 	for i := range s.Rules {
 		r := &s.Rules[i]
-		if r.Effect == effect && (only == nil || only(r)) && r.matches(sub) {
-			return r
+		if r.Effect != effect || (only != nil && !only(r)) {
+			continue
+		}
+		for j := range subs {
+			if r.matches(&subs[j]) {
+				return r
+			}
 		}
 	}
 	return nil
