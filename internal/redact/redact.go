@@ -4,6 +4,7 @@ package redact
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"unicode"
@@ -43,6 +44,12 @@ type pattern struct {
 	// mysql --skip-password --password VALUE. The expression must not look behind its first
 	// character (no ^ or \b there), since each search starts part way through the text.
 	overlap bool
+	// also, when set, is a second expression with the same groups whose matches in the same text
+	// are judged by keep and stripped too, together with re's. The flag pattern uses it for 0.1.1's
+	// own expression, matched as 0.1.1 matched it, so everything 0.1.1 stripped is still stripped:
+	// a 0.1.1 flag inside the value of a flag only 0.1.2 matches, as in
+	// --no-password "curl --token VALUE", is found although re's search went past it (QA6-REC-1).
+	also *lazyRE
 }
 
 var patterns = []pattern{
@@ -100,7 +107,8 @@ var patterns = []pattern{
 	{re: lazy(`(?i)\b(?:bearer|token)\s+([A-Za-z0-9_\-\.=+/]{16,})`), group: 1, heuristic: true, keep: noDigit},
 	// --password VALUE style flags, also with a word before the name: --http-password,
 	// --db-password, --github-token. --no-password and the like take no value.
-	{re: lazy(`(?i)--(?:[a-z]+-)?(?:password|passwd|secret|token|api-key|apikey|access-key|account-key|client-secret|auth-token)(?:=|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`), group: -1, heuristic: true, keep: flagWithoutValue, overlap: true},
+	{re: lazy(`(?i)--(?:[a-z]+-)?(?:password|passwd|secret|token|api-key|apikey|access-key|account-key|client-secret|auth-token)(?:=|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`), group: -1, heuristic: true, keep: flagWithoutValue, overlap: true,
+		also: lazy(`(?i)--(?:password|passwd|secret|token|api-key|apikey|access-key|account-key|client-secret|auth-token)(?:=|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`)},
 }
 
 // mongoCommand finds a MongoDB tool run as a command: at the start of one (after ; & | ( or a
@@ -183,6 +191,10 @@ func inSpans(spans [][2]int, i int) bool {
 
 func replace(s string, p pattern, total *int) string {
 	idx := matches(s, p)
+	if p.also != nil {
+		idx = append(idx, p.also.get().FindAllStringSubmatchIndex(s, -1)...)
+		sort.SliceStable(idx, func(i, j int) bool { return idx[i][0] < idx[j][0] })
+	}
 	if idx == nil {
 		return s
 	}
@@ -215,10 +227,16 @@ func replace(s string, p pattern, total *int) string {
 		}
 		v := s[start:end]
 		// A value that is only a variable or a template names a secret without holding it.
-		if v == Marker || start < last || varRef.get().MatchString(v) || (p.heuristic && inSpans(spans, m[0])) {
+		if v == Marker || varRef.get().MatchString(v) || (p.heuristic && inSpans(spans, m[0])) {
 			continue
 		}
 		if p.keep != nil && p.keep(s, m, v) {
+			continue
+		}
+		if start < last {
+			// A value that starts inside one already stripped, as a flag inside another flag's
+			// value can: the stripped text runs on to its end.
+			last = max(last, end)
 			continue
 		}
 		b.WriteString(s[last:start])

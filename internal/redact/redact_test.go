@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -475,6 +476,14 @@ func TestFlagTakenAsAnotherFlagsValue(t *testing.T) {
 		{"tool --db-password --api-key -hunter22 sync", "hunter22"},
 		{"tool --ask-password --secret 'Lark Spur 9' sync", "Lark Spur 9"},
 		{"tool --password --token k3pq9xz2mlw7 sync", "k3pq9xz2mlw7"},
+		// QA6-REC-1: a 0.1.1 flag inside the value of a flag only 0.1.2 matches, which 0.1.1 found.
+		{`remote-run --no-password "curl -s --token Zq7nHRcK2pLw9x https://api.example.com"`, "Zq7nHRcK2pLw9x"},
+		{`tool --ask-password "deploy --api-key Zq7nHRcK2pLw9x"`, "Zq7nHRcK2pLw9x"},
+		{`gh auth login --with-token "--password Zq7nHRcK2pLw9x"`, "Zq7nHRcK2pLw9x"},
+		{`sed -i 's/--db-password old1/--password N3wSecret9/' deploy.sh`, "N3wSecret9"},
+		{"tool --db-password=--token Zq7nHRcK2pLw9x", "Zq7nHRcK2pLw9x"},
+		{"tool --no-password=--token Zq7nHRcK2pLw9x", "Zq7nHRcK2pLw9x"},
+		{"tool --db-password abc--token Zq7nHRcK2pLw9x", "Zq7nHRcK2pLw9x"},
 	} {
 		out, n := String(c.in)
 		if strings.Contains(out, c.secret) || n == 0 {
@@ -497,6 +506,105 @@ func TestFlagTakenAsAnotherFlagsValue(t *testing.T) {
 	if out, n := String(in); out != want || n != 1 {
 		t.Errorf("%q -> %q (%d), want %q (1)", in, out, n, want)
 	}
+}
+
+// QA6-REC-1: every value 0.1.1's flag expression stripped is still stripped, wherever 0.1.2's
+// wider expression (flags with a word before the name) matched first. 0.1.1's expression and its
+// one veto, a docker build --secret spec, are written out here as 0.1.1 had them (410db01), and
+// run over flags inside other flags' values: quoted commands, = forms, glued and sed forms. A lone
+// "-" or "--", or a value made only of < or >, holds no secret and is no longer stripped. 0.1.1
+// ran its "token VALUE" pattern first, so a flag inside a value that pattern stripped was never
+// seen by its flag expression (sed 's/--with-token old1/--access-key KEY/' kept KEY); such
+// flags are skipped here, as 0.1.1 skipped them.
+func TestFlagsStripEverything011Stripped(t *testing.T) {
+	tokenWord := regexp.MustCompile(`(?i)\b(?:bearer|token)\s+([A-Za-z0-9_\-\.=+/]{16,})`)
+	v011 := regexp.MustCompile(`(?i)--(?:password|passwd|secret|token|api-key|apikey|access-key|account-key|client-secret|auth-token)(?:=|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`)
+	outers := []string{"--password", "--token", "--no-password", "--ask-password", "--prompt-password", "--with-token", "--db-password", "--skip-password", "--github-token"}
+	values := []string{"Zq7nHRcK2pLw9x", "hunter22", "-hunter22", "k3pq-9xz2-mlw7", "-Hk3pQ9xZ2mLw7Rt5Vb8N"}
+	forms := []func(o, i, v string) string{
+		func(o, i, v string) string {
+			return "run " + o + ` "curl -s ` + i + " " + v + ` https://api.example.com"`
+		},
+		func(o, i, v string) string { return "run " + o + " '" + i + " " + v + "' sync" },
+		func(o, i, v string) string { return "run " + o + "=" + i + " " + v },
+		func(o, i, v string) string { return "run " + o + " " + i + " " + v + " sync" },
+		func(o, i, v string) string { return "run " + o + " abc" + i + " " + v },
+		func(o, i, v string) string { return "sed -i 's/" + o + " old1/" + i + " " + v + "/' deploy.sh" },
+		func(o, i, v string) string { return "run " + o + "=" + i + "=" + v },
+	}
+	n := 0
+	for _, o := range outers {
+		for _, name := range v011Flags {
+			for _, v := range values {
+				for _, form := range forms {
+					in := form(o, "--"+name, v)
+					out, _ := String(in)
+					stripped := strippedBytes(t, in, out)
+					var swallowed [][2]int
+					for _, m := range tokenWord.FindAllStringSubmatchIndex(in, -1) {
+						if strings.ContainsAny(in[m[2]:m[3]], "0123456789") {
+							swallowed = append(swallowed, [2]int{m[2], m[3]})
+						}
+					}
+				flags:
+					for _, m := range v011.FindAllStringSubmatchIndex(in, -1) {
+						for _, sw := range swallowed {
+							if m[0] >= sw[0] && m[0] < sw[1] {
+								continue flags
+							}
+						}
+						var vs, ve int
+						for g := 1; g <= 3; g++ {
+							if m[2*g] >= 0 {
+								vs, ve = m[2*g], m[2*g+1]
+							}
+						}
+						val := in[vs:ve]
+						if strings.Trim(val, "<>") == "" || val == "-" || val == "--" || dockerSecretSpec("", nil, val) {
+							continue
+						}
+						n++
+						for i := vs; i < ve; i++ {
+							if !stripped[i] {
+								t.Errorf("%q -> %q keeps %q, which 0.1.1 stripped", in, out, val)
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if n < 2000 {
+		t.Fatalf("checked only %d values", n)
+	}
+}
+
+// strippedBytes reports which bytes of in were replaced by a Marker in out, by aligning out's
+// text between markers with in.
+func strippedBytes(t *testing.T, in, out string) []bool {
+	t.Helper()
+	parts := strings.Split(out, Marker)
+	var expr strings.Builder
+	expr.WriteString("(?s)^")
+	for i, p := range parts {
+		expr.WriteString(regexp.QuoteMeta(p))
+		if i < len(parts)-1 {
+			expr.WriteString("(.+?)")
+		}
+	}
+	expr.WriteString("$")
+	m := regexp.MustCompile(expr.String()).FindStringSubmatchIndex(in)
+	if m == nil {
+		t.Fatalf("can't align %q with %q", out, in)
+	}
+	got := make([]bool, len(in))
+	for g := 1; g < len(parts); g++ {
+		for i := m[2*g]; i < m[2*g+1]; i++ {
+			got[i] = true
+		}
+	}
+	return got
 }
 
 // QA5-REC-1: the flag search that lets one flag be taken as another's value stays linear. Chains
