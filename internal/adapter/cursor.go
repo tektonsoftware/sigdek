@@ -148,7 +148,8 @@ func Cursor(raw []byte, ctx Context, hint string) Result {
 }
 
 // cursorAction maps Cursor's tool names, which are less settled than Claude Code's, by
-// what they contain. Unknown tools are recorded as "other" with their name.
+// what they contain. An unknown tool whose input has a string "command" is a shell action, as
+// for Claude Code; other unknown tools are recorded as "other" with their name.
 func cursorAction(name string, rawInput json.RawMessage) actionFields {
 	in := decodeObject(rawInput)
 	f := actionFields{Kind: "other", Name: name}
@@ -183,6 +184,8 @@ func cursorAction(name string, rawInput json.RawMessage) actionFields {
 		}
 	case strings.Contains(n, "web") || strings.Contains(n, "fetch") || strings.Contains(n, "browser"):
 		f.Kind, f.URL = "web", str(in, "url")
+	default:
+		shellCommand(&f, in)
 	}
 	return f
 }

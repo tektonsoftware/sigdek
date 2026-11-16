@@ -146,6 +146,10 @@ func claudeCodeAction(name string, rawInput json.RawMessage) actionFields {
 	switch name {
 	case "Bash":
 		f.Kind, f.Command = "shell", str(in, "command")
+	case "PowerShell", "Monitor":
+		// PowerShell runs its command in PowerShell; Monitor runs its command in the shell and
+		// watches the output. Rules and the record treat both as shell commands (BB-RULE-1).
+		shellCommand(&f, in)
 	case "Read", "NotebookRead":
 		f.Kind, f.Path = "file_read", str(in, "file_path", "notebook_path")
 	case "Grep", "Glob", "LS":
@@ -159,9 +163,21 @@ func claudeCodeAction(name string, rawInput json.RawMessage) actionFields {
 	default:
 		if server, tool, ok := splitMCP(name); ok {
 			f.Kind, f.MCP = "mcp", &event.MCP{Server: server, Tool: tool}
+		} else {
+			shellCommand(&f, in)
 		}
 	}
 	return f
+}
+
+// shellCommand makes a tool call a shell action when its input has a string "command": a tool
+// that takes a command runs it, as far as rules can tell, so a Block rule on a command stops
+// it whichever tool the agent picks, and the record keeps the command. It covers tools a newer
+// agent version adds before SigDek knows their names; MCP tools are never passed here.
+func shellCommand(f *actionFields, in map[string]any) {
+	if c, ok := in["command"].(string); ok {
+		f.Kind, f.Command = "shell", c
+	}
 }
 
 // splitMCP parses "mcp__<server>__<tool>".
