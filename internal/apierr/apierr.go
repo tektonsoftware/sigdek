@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 )
 
 // Error is a response with a status of 300 or more.
@@ -57,4 +59,38 @@ func New(url string, status int, body []byte) *Error {
 		e.Message = s
 	}
 	return e
+}
+
+// NoRedirects returns a copy of c (a new client with the timeout when c is nil) that doesn't
+// follow redirects, so a 3xx comes back as an answer, which FromResponse reports as an error.
+// SigDek's server never redirects its API, and following one would drop the token on a hop to
+// another host, turn a POST into a GET, or, for a 307, send the records to wherever it points
+// (BB-NET-1, BB-NET-7).
+func NoRedirects(c *http.Client, timeout time.Duration) *http.Client {
+	var cc http.Client
+	if c != nil {
+		cc = *c
+	} else {
+		cc.Timeout = timeout
+	}
+	cc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &cc
+}
+
+// FromResponse is New for a response with a status of 300 or more; a redirect is reported as
+// one, with where it points.
+func FromResponse(reqURL string, res *http.Response, body []byte) *Error {
+	if res.StatusCode < 300 || res.StatusCode >= 400 {
+		return New(reqURL, res.StatusCode, body)
+	}
+	to := res.Header.Get("Location")
+	if base, err := url.Parse(reqURL); err == nil && to != "" {
+		if u, err := base.Parse(to); err == nil {
+			to = u.String()
+		}
+	}
+	if to == "" {
+		return &Error{URL: reqURL, Status: res.StatusCode, Message: "the server answered with a redirect"}
+	}
+	return &Error{URL: reqURL, Status: res.StatusCode, Message: "the server answered with a redirect to " + to}
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -70,24 +71,60 @@ type actionFields struct {
 	Path    string
 	URL     string
 	MCP     *event.MCP
+	// Searched is set for a search with a glob (see searchFields): the folder or file it
+	// looks in, while Path is that folder joined with the glob. Rules see the action with
+	// either path.
+	Searched string
 }
 
-// buildAction returns the action to store and the action to match rules against.
-func buildAction(f actionFields, rawInput json.RawMessage, cwd string) (stored, view *event.Action, redactions int) {
-	view = actionView(f, cwd)
-	stored, redactions = storedAction(f, view, rawInput)
-	return stored, view, redactions
+// buildAction returns the action to store and the forms of it rules match against (see
+// actionViews); the first form is the one stored.
+func buildAction(f actionFields, rawInput json.RawMessage, cwd string) (stored *event.Action, views []*event.Action, redactions int) {
+	views = actionViews(f, cwd)
+	stored, redactions = storedAction(f, views[0], rawInput)
+	return stored, views, redactions
 }
 
-// actionView is the action as rules see it: the command, path and URL as the agent sent them,
+// actionViews is the action as rules see it: the command, path and URL as the agent sent them,
 // before anything is cut or redacted, so padding can't push a command past the cut and out of
-// a rule's sight. Only the path is made repository-relative.
-func actionView(f actionFields, cwd string) *event.Action {
+// a rule's sight. Only the path is made repository-relative. A search with a glob comes in two
+// forms, one with the folder joined with the glob and one with the folder alone, so a path rule
+// that matches either applies to it.
+func actionViews(f actionFields, cwd string) []*event.Action {
 	view := &event.Action{Kind: f.Kind, Name: f.Name, Command: f.Command, URL: f.URL, MCP: f.MCP}
-	if f.Path != "" {
-		view.Path = gitinfo.RelPath(gitinfo.Find(cwd).Root, f.Path)
+	if f.Path == "" {
+		return []*event.Action{view}
 	}
-	return view
+	root := gitinfo.Find(cwd).Root
+	view.Path = gitinfo.RelPath(root, f.Path)
+	if f.Searched == "" {
+		return []*event.Action{view}
+	}
+	folder := *view
+	folder.Path = gitinfo.RelPath(root, f.Searched)
+	return []*event.Action{view, &folder}
+}
+
+// searchFields describes a search (Grep, Glob) as a file read of the folder or file it looks
+// in, which is the session's folder when the agent names none. A search with a glob is
+// recorded and matched as that folder joined with the glob, so `Grep --glob .env` reads as
+// .env to a rule on secrets files, and the record shows the glob (BB-HOOK-2); rules also see
+// the folder alone (Searched). An absolute glob stands on its own.
+func searchFields(f *actionFields, path, glob, cwd string) {
+	f.Kind = "file_read"
+	if path == "" {
+		path = cwd
+	}
+	if glob == "" {
+		f.Path = path
+		return
+	}
+	f.Searched = path
+	if filepath.IsAbs(glob) || path == "" {
+		f.Path = glob
+		return
+	}
+	f.Path = filepath.Join(path, glob)
 }
 
 // storedAction is the action as recorded: cut to the schema's limits first and redacted after,
@@ -226,8 +263,8 @@ func blocked(r *event.Record, view *event.Action, deny *rules.Rule, rawInput jso
 }
 
 // applyRule tags a finished action with the first matching sensitive-action rule.
-func applyRule(r *event.Record, view *event.Action, set rules.Set) {
-	if m := set.Match(view, rules.Flag); m != nil {
+func applyRule(r *event.Record, views []*event.Action, set rules.Set) {
+	if m := set.MatchAny(views, rules.Flag); m != nil {
 		r.Rule = m.ID
 	}
 }

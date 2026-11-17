@@ -5,7 +5,7 @@
 [![npm](https://img.shields.io/npm/v/sigdek)](https://www.npmjs.com/package/sigdek)
 [![License](https://img.shields.io/github/license/tektonsoftware/sigdek)](LICENSE)
 
-SigDek records what AI coding agents do on your team's machines (who ran which agent, which tool, the command or file, and whether it ran or was blocked) and turns that record into evidence an auditor or a customer can read. It [never records](docs/recording.md#never-recorded) prompt text, command output, or the contents of files an agent reads or edits.
+SigDek records what AI coding agents do on your team's machines (who ran which agent, which tool, the command or file, and whether it ran or was blocked) and turns that record into evidence an auditor or a customer can read. It [never records](docs/recording.md#never-recorded) prompt text, command output, or the contents of files an agent reads or edits; text an agent writes inside a shell command, such as a heredoc, is part of the recorded command.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/activity-blocked-dark-2x.webp">

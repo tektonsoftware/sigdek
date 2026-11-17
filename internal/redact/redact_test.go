@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -283,10 +284,475 @@ func TestRound3Redaction(t *testing.T) {
 
 // Expressions are compiled when first used, not at start-up; every one of them compiles.
 func TestEveryExpressionCompiles(t *testing.T) {
-	for _, l := range []*lazyRE{keyValue, messageArg, varRef, secretWord} {
+	for _, l := range []*lazyRE{keyValue, keyValue011, messageArg, varRef, secretWord, secretWord011, namedSecret, hexKey, keyAlphabet, flagWord} {
 		l.get()
 	}
 	for _, p := range patterns {
 		p.re.get()
+		if p.also != nil {
+			p.also.get()
+		}
+	}
+}
+
+// BB-RULE-6: everyday password and key names and flags are caught: DB_PASS, MYSQL_PWD, a
+// generated *_KEY, --http-password VALUE, redis-cli -a, mongosh -p, Vault tokens and a token
+// given as a URL's user. Look-alikes are left alone: PWD and OLDPWD, a *_KEY that holds a
+// name or a path, settings about a password, flags that take no value, and variables.
+func TestRound4Redaction(t *testing.T) {
+	pass := "Zq7n3HRc" + fake("", 6, alnum)
+	key := "In9ntgkf" + fake("", 24, alnum)
+	vault := "hvs." + fake("", 24, alnum)
+	hex := fake("", 40, hexchars)
+	for _, c := range []struct{ in, secret string }{
+		{"export DB_PASS=" + pass + " && npm start", pass},
+		{"DB_PASS='" + pass + "' npm run migrate", pass},
+		{"MYSQL_PWD=" + pass + " mysql -u root shop", pass},
+		{"export SMTP_PASS=" + pass, pass},
+		{"docker run -e REDIS_PASS=" + pass + " app", pass},
+		{"export ENCRYPTION_KEY=" + key, key},
+		{"SIGNING_KEY=" + key + " ./sign.sh", key},
+		{"export APP_KEY=base64:" + key + "=", key},
+		{"export MASTER_KEY=" + hex, hex},
+		{"kubectl create secret generic db --from-literal=DB_PASS=" + pass, pass},
+		{"redis-cli -h cache.example.com -a " + pass + " ping", pass},
+		{"redis-cli -a '" + pass + "' --no-auth-warning info", pass},
+		{"mongosh mongodb://db.example.com -u admin -p " + pass, pass},
+		{"mongodump --host db.example.com -u admin -p '" + pass + "' --out dump", pass},
+		{"wget --http-password " + pass + " https://files.example.com/f", pass},
+		{"curl --proxy-user u --db-password " + pass + " https://x.example", pass},
+		{"gh-tool --github-token " + key + " sync", key},
+		{"vault login " + vault, vault},
+		{"VAULT_ADDR=https://vault.example.com vault kv get -token=" + vault + " secret/app", vault},
+		{"git remote set-url origin https://" + hex + "@github.com/larkspur-labs-example/api.git", hex},
+	} {
+		out, n := String(c.in)
+		if strings.Contains(out, c.secret) || n == 0 {
+			t.Errorf("%q -> %q (%d)", c.in, out, n)
+		}
+	}
+	for _, in := range []string{
+		"PWD=/tmp make", "cd $OLDPWD", "OLDPWD=/x ls", "git commit --no-verify -m 'bypass=1'",
+		"export SORT_KEY=name", "PRIMARY_KEY=id node seed.js", "export CACHE_KEY=users-v2",
+		"export GPG_KEY=0xABCD1234", "export SSH_KEY=~/.ssh/id_ed25519", "export S3_KEY=uploads/2026/report.pdf",
+		"export DB_PASS_FILE=/run/secrets/db", "export SSH_KEY_PATH=~/.ssh/id_rsa", "FIRST_PASS=true ./build.sh",
+		"aws dynamodb query --key-condition-expression 'pk = :v'",
+		"mongosh -u admin -p --authenticationDatabase admin", "redis-cli -a $REDIS_PASSWORD ping",
+		"pytest --pass-through x", "curl https://user@example.com/x", "git clone https://git@example.com/larkspur-labs/api.git",
+		"pg_dump --no-password -h db.example.com app", "psql -w --no-password app",
+		"ansible-playbook site.yml --ask-vault-password", "gh auth login --with-token < token.txt",
+		"aws secretsmanager get-secret-value --secret-id prod/db", "docker login --password-stdin ghcr.io",
+		"export SIGNING_KEY=$SIGNING_KEY_B64", "export APP_KEY=${APP_KEY:-}", "hvs.short",
+		`git commit -m "redis-cli -a is how you pass the password"`,
+	} {
+		if out, n := String(in); out != in || n != 0 {
+			t.Errorf("%q -> %q", in, out)
+		}
+	}
+}
+
+// QA2-L5-3: a MongoDB tool counts only where it runs as a command, and a flag followed by
+// another flag has no value, so everyday commands aren't redacted. Each form that runs mongosh
+// or passes a password is still caught.
+func TestRound5Redaction(t *testing.T) {
+	pass := "Zq7n3HRc" + fake("", 6, alnum)
+	for _, c := range []struct{ in, secret string }{
+		{"docker exec -it db mongosh -u admin -p " + pass, pass},
+		{"docker exec -it -u root mongo mongosh admin -p '" + pass + "'", pass},
+		{"kubectl exec -it mongo-0 -- mongosh -u admin -p " + pass, pass},
+		{"sudo mongosh -u admin -p " + pass, pass},
+		{"/usr/local/bin/mongosh -u admin -p " + pass, pass},
+		{"MONGO_URL=x mongosh -u admin -p " + pass, pass},
+		{"cd backup && mongodump -u admin -p " + pass + " --out dump", pass},
+		{"echo ok; mongorestore -u admin -p " + pass, pass},
+		{"OUT=$(mongoexport -u admin -p " + pass + " -c users)", pass},
+		{"tool --db-password=-" + pass + " sync", pass},
+		{"tool --db-password '-" + pass + "' sync", pass},
+		{"docker login -u ci --password " + pass + " registry.example.com", pass},
+	} {
+		out, n := String(c.in)
+		if strings.Contains(out, c.secret) || n == 0 {
+			t.Errorf("%q -> %q (%d)", c.in, out, n)
+		}
+	}
+	for _, in := range []string{
+		"docker run --name mongo -p 27017:27017 -d mongo:7",
+		"docker run -d --name mongo -p 27017:27017 -e MONGO_INITDB_DATABASE=app mongo:7",
+		"podman run --rm --name mongodb -p 27017:27017 mongo",
+		"kubectl exec mongo-0 -- ls -p data",
+		"kubectl port-forward svc/mongo -p 27017",
+		"mysql --skip-password -u root shop",
+		"mysqldump --skip-password -h db.example.com shop",
+		"pg_dump --no-password -h db.example.com app",
+		"git commit -m 'mongosh -p is how you pass it'",
+	} {
+		if out, n := String(in); out != in || n != 0 {
+			t.Errorf("%q -> %q (%d)", in, out, n)
+		}
+	}
+}
+
+// QA3-REC-3 and QA4-REC-1: a secret given after a space to a password, token, secret or key
+// flag is stripped even when it starts with "-", as about 1 in 64 URL-safe base64 keys does.
+// 0.1.1's own flags (--password, --api-key and the rest of v011Flags) always take the next
+// word, as 0.1.1 did, so a human or lowercase hyphenated secret is stripped too. For a flag with
+// a word before the name, --no-, --ask-, --prompt- and --with- take no value, and otherwise a
+// value that reads as a flag (-u, -uroot, -P3306, --verbose, --host=…) means it took none. A lone
+// "-" or "--", a value made only of < or >, and a docker build --secret spec hold no secret.
+// v011Flags are the flag names 0.1.1's pattern matched (410db01, redact.go), written out here
+// rather than read from secretFlags, so dropping a name from the code fails this test (QA5-REC-2).
+var v011Flags = []string{"password", "passwd", "secret", "token", "api-key", "apikey", "access-key", "account-key", "client-secret", "auth-token"}
+
+func TestSecretFlagsKeep011sNames(t *testing.T) {
+	have := map[string]bool{}
+	for _, n := range secretFlags {
+		have[n] = true
+	}
+	for _, n := range v011Flags {
+		if !have[n] {
+			t.Errorf("secretFlags lacks %q, which 0.1.1 stripped the next word after", n)
+		}
+	}
+}
+
+func TestFlagValueThatStartsWithADash(t *testing.T) {
+	key := "-Hk3pQ9xZ2mLw7Rt5Vb8N"
+	pass := "-Zq7n3HRc" + fake("", 6, alnum) + "d1"
+	hex := "-a" + fake("", 39, hexchars)
+	upperFirst := "-A" + fake("", 6, "abcdefghjkmnpqrstuvwxyz") + "3" + fake("", 8, "abcdefghjkmnpqrstuvwxyz")
+	digitFirst := "-7" + fake("", 6, "abcdefghjkmnpqrstuvwxyz")
+	cases := []struct{ in, secret string }{
+		{"deploy --api-key " + key + " sync", key},
+		{"app --client-secret " + key, key},
+		{"app --secret " + key, key},
+		{"tool --password " + pass + " sync", pass},
+		{"tool --access-key " + key + " --region us-east-1", key},
+		{"tool --db-password " + pass, pass},
+		{"tool --api-key " + hex, hex},
+		{"tool --client-secret " + upperFirst + " sync", upperFirst},
+		{"tool --secret " + digitFirst + " sync", digitFirst},
+		// QA4-REC-1: values that read like a flag, given to one of 0.1.1's own flags.
+		{"deploy --password -hunter22 prod", "hunter22"},
+		{"deploy --api-key -k3pq-9xz2-mlw7-rt5v prod", "k3pq-9xz2-mlw7-rt5v"},
+		{"tool --password -Secret123 sync", "Secret123"},
+		{"deploy --PASSWORD -hunter22 prod", "hunter22"},
+		{"deploy --Api-Key -k3pq-9xz2-mlw7-rt5v prod", "k3pq-9xz2-mlw7-rt5v"},
+		{"mysql --password -u root shop", "-u"}, // over-redacted, as 0.1.1 did
+	}
+	for _, name := range v011Flags {
+		cases = append(cases, struct{ in, secret string }{"deploy --" + name + " -lark-spur-9 prod", "lark-spur-9"})
+	}
+	for _, c := range cases {
+		out, n := String(c.in)
+		if strings.Contains(out, c.secret) || n == 0 {
+			t.Errorf("%q -> %q (%d)", c.in, out, n)
+		}
+	}
+	for _, in := range []string{
+		"mysql --skip-password -u root shop",
+		"mysql --skip-password -uroot -P3306 shop",
+		"mysql --skip-password -h db.example.com shop",
+		"mysql --skip-password --verbose shop",
+		"mysql --skip-password --host=db.example.com --port=3306 shop",
+		"mysql --skip-password --default-character-set=utf8mb4 shop",
+		"docker run --name mongo -p 27017:27017 -d mongo:7",
+		"tool --token - < token.txt",
+		"tool --token -- run",
+		"tool --password - < pass.txt",
+		"mysql --skip-password -u root --password-stdin shop",
+		"tool --db-password -v sync",
+	} {
+		if out, n := String(in); out != in || n != 0 {
+			t.Errorf("%q -> %q (%d)", in, out, n)
+		}
+	}
+}
+
+// QA4-REC-1: a flag that another flag took as its value is still judged on its own, so a secret
+// given to it is stripped. In mysql --skip-password --password VALUE, --skip-password takes no
+// value and --password takes VALUE, as 0.1.1 read it. In --password --token VALUE, 0.1.1 stripped
+// only --token; VALUE is now stripped too.
+func TestFlagTakenAsAnotherFlagsValue(t *testing.T) {
+	for _, c := range []struct{ in, secret string }{
+		{"mysql --skip-password --password hunter22 shop", "hunter22"},
+		{"pg_dump --no-password --token k3pq9xz2mlw7 app", "k3pq9xz2mlw7"},
+		{"tool --db-password --api-key -hunter22 sync", "hunter22"},
+		{"tool --ask-password --secret 'Lark Spur 9' sync", "Lark Spur 9"},
+		{"tool --password --token k3pq9xz2mlw7 sync", "k3pq9xz2mlw7"},
+		// QA6-REC-1: a 0.1.1 flag inside the value of a flag only 0.1.2 matches, which 0.1.1 found.
+		{`remote-run --no-password "curl -s --token Zq7nHRcK2pLw9x https://api.example.com"`, "Zq7nHRcK2pLw9x"},
+		{`tool --ask-password "deploy --api-key Zq7nHRcK2pLw9x"`, "Zq7nHRcK2pLw9x"},
+		{`gh auth login --with-token "--password Zq7nHRcK2pLw9x"`, "Zq7nHRcK2pLw9x"},
+		{`sed -i 's/--db-password old1/--password N3wSecret9/' deploy.sh`, "N3wSecret9"},
+		{"tool --db-password=--token Zq7nHRcK2pLw9x", "Zq7nHRcK2pLw9x"},
+		{"tool --no-password=--token Zq7nHRcK2pLw9x", "Zq7nHRcK2pLw9x"},
+		{"tool --db-password abc--token Zq7nHRcK2pLw9x", "Zq7nHRcK2pLw9x"},
+	} {
+		out, n := String(c.in)
+		if strings.Contains(out, c.secret) || n == 0 {
+			t.Errorf("%q -> %q (%d)", c.in, out, n)
+		}
+	}
+	for _, in := range []string{
+		"mysql --skip-password --verbose shop",
+		"pg_dump --no-password --host db.example.com app",
+		"gh auth login --with-token < token.txt",
+		`git commit -m "use --skip-password --password x"`,
+	} {
+		if out, n := String(in); out != in || n != 0 {
+			t.Errorf("%q -> %q (%d)", in, out, n)
+		}
+	}
+	// QA5-REC-3: a flag written inside a value that was stripped isn't judged again, so a sed
+	// edit of a script's flag keeps its replacement text, as in 0.1.1.
+	in, want := `sed -i 's/--password x/--password y/' run.sh`, `sed -i 's/--password [redacted] y/' run.sh`
+	if out, n := String(in); out != want || n != 1 {
+		t.Errorf("%q -> %q (%d), want %q (1)", in, out, n, want)
+	}
+}
+
+// QA6-REC-1: every value 0.1.1's flag expression stripped is still stripped, wherever 0.1.2's
+// wider expression (flags with a word before the name) matched first. 0.1.1's expression and its
+// one veto, a docker build --secret spec, are written out here as 0.1.1 had them (410db01), and
+// run over flags inside other flags' values: quoted commands, = forms, glued and sed forms. A lone
+// "-" or "--", or a value made only of < or >, holds no secret and is no longer stripped. 0.1.1
+// ran its "token VALUE" pattern first, so a flag inside a value that pattern stripped was never
+// seen by its flag expression (sed 's/--with-token old1/--access-key KEY/' kept KEY); such
+// flags are skipped here, as 0.1.1 skipped them.
+func TestFlagsStripEverything011Stripped(t *testing.T) {
+	tokenWord := regexp.MustCompile(`(?i)\b(?:bearer|token)\s+([A-Za-z0-9_\-\.=+/]{16,})`)
+	v011 := regexp.MustCompile(`(?i)--(?:password|passwd|secret|token|api-key|apikey|access-key|account-key|client-secret|auth-token)(?:=|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`)
+	outers := []string{"--password", "--token", "--no-password", "--ask-password", "--prompt-password", "--with-token", "--db-password", "--skip-password", "--github-token"}
+	values := []string{"Zq7nHRcK2pLw9x", "hunter22", "-hunter22", "k3pq-9xz2-mlw7", "-Hk3pQ9xZ2mLw7Rt5Vb8N"}
+	forms := []func(o, i, v string) string{
+		func(o, i, v string) string {
+			return "run " + o + ` "curl -s ` + i + " " + v + ` https://api.example.com"`
+		},
+		func(o, i, v string) string { return "run " + o + " '" + i + " " + v + "' sync" },
+		func(o, i, v string) string { return "run " + o + "=" + i + " " + v },
+		func(o, i, v string) string { return "run " + o + " " + i + " " + v + " sync" },
+		func(o, i, v string) string { return "run " + o + " abc" + i + " " + v },
+		func(o, i, v string) string { return "sed -i 's/" + o + " old1/" + i + " " + v + "/' deploy.sh" },
+		func(o, i, v string) string { return "run " + o + "=" + i + "=" + v },
+	}
+	n := 0
+	for _, o := range outers {
+		for _, name := range v011Flags {
+			for _, v := range values {
+				for _, form := range forms {
+					in := form(o, "--"+name, v)
+					out, _ := String(in)
+					stripped := strippedBytes(t, in, out)
+					var swallowed [][2]int
+					for _, m := range tokenWord.FindAllStringSubmatchIndex(in, -1) {
+						if strings.ContainsAny(in[m[2]:m[3]], "0123456789") {
+							swallowed = append(swallowed, [2]int{m[2], m[3]})
+						}
+					}
+				flags:
+					for _, m := range v011.FindAllStringSubmatchIndex(in, -1) {
+						for _, sw := range swallowed {
+							if m[0] >= sw[0] && m[0] < sw[1] {
+								continue flags
+							}
+						}
+						var vs, ve int
+						for g := 1; g <= 3; g++ {
+							if m[2*g] >= 0 {
+								vs, ve = m[2*g], m[2*g+1]
+							}
+						}
+						val := in[vs:ve]
+						if strings.Trim(val, "<>") == "" || val == "-" || val == "--" || dockerSecretSpec("", nil, val) {
+							continue
+						}
+						n++
+						for i := vs; i < ve; i++ {
+							if !stripped[i] {
+								t.Errorf("%q -> %q keeps %q, which 0.1.1 stripped", in, out, val)
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if n < 2000 {
+		t.Fatalf("checked only %d values", n)
+	}
+}
+
+// strippedBytes reports which bytes of in were replaced by a Marker in out, by aligning out's
+// text between markers with in.
+func strippedBytes(t *testing.T, in, out string) []bool {
+	t.Helper()
+	parts := strings.Split(out, Marker)
+	var expr strings.Builder
+	expr.WriteString("(?s)^")
+	for i, p := range parts {
+		expr.WriteString(regexp.QuoteMeta(p))
+		if i < len(parts)-1 {
+			expr.WriteString("(.+?)")
+		}
+	}
+	expr.WriteString("$")
+	m := regexp.MustCompile(expr.String()).FindStringSubmatchIndex(in)
+	if m == nil {
+		t.Fatalf("can't align %q with %q", out, in)
+	}
+	got := make([]bool, len(in))
+	for g := 1; g < len(parts); g++ {
+		for i := m[2*g]; i < m[2*g+1]; i++ {
+			got[i] = true
+		}
+	}
+	return got
+}
+
+// QA7-REC-1: a secret pair after a pair named only by a generic KEY, in a comma list or a quoted
+// value, is stripped, as 0.1.1 stripped it: the wider key=value expression's match runs past it
+// without stripping, and 0.1.1's expression, run over the same text, finds it.
+func TestSecretPairAfterAGenericKeyPair(t *testing.T) {
+	wrappers := []string{
+		`gcloud run deploy api --set-env-vars "%s"`,
+		`gcloud run deploy api --update-env-vars %s`,
+		`aws lambda update-function-configuration --function-name api --environment "Variables={%s}"`,
+		`helm upgrade --install api ./chart --set %s`,
+		`docker run -e '%s' app`,
+	}
+	generic := []string{"CACHE_KEY=prod", "SORT_KEY=name", "PRIMARY_KEY=id", "service.cache_key=v1", "STORAGE_KEY=users-v2"}
+	secrets := []struct{ pair, secret string }{
+		{"DB_PASSWORD=hunter2x", "hunter2x"},
+		{"API_TOKEN=Zq7nHRcK2pLw9x", "Zq7nHRcK2pLw9x"},
+		{"postgresql.auth.password=Lark5pur99", "Lark5pur99"},
+		{"CLIENT_SECRET=k3pq9xz2mlw7", "k3pq9xz2mlw7"},
+	}
+	for _, w := range wrappers {
+		for _, g := range generic {
+			for _, sc := range secrets {
+				for _, list := range []string{g + "," + sc.pair, g + "," + sc.pair + ",REGION=us-east-1"} {
+					in := strings.Replace(w, "%s", list, 1)
+					out, n := String(in)
+					if strings.Contains(out, sc.secret) || n == 0 {
+						t.Errorf("%q -> %q (%d)", in, out, n)
+					}
+					if !strings.Contains(out, g) {
+						t.Errorf("%q -> %q changed %q, which names no secret", in, out, g)
+					}
+				}
+			}
+		}
+	}
+	for _, c := range []struct{ in, secret string }{
+		{`gcloud run deploy api --set-env-vars=^:^CACHE_KEY=prod:DB_PASSWORD=hunter2x`, "hunter2x"},
+		{`export STORAGE_KEY="DefaultEndpointsProtocol=https;AccountName=larkspur;AccountKey=Zq7nHRcK2pLw9xHk3pQ9xZ2mLw7Rt5Vb8N=="`, "Zq7nHRcK2pLw9xHk3pQ9xZ2mLw7Rt5Vb8N"},
+		{`CACHE_KEY="session token=Zq7nHRcK2pLw9x" ./run.sh`, "Zq7nHRcK2pLw9x"},
+		// A stripped pair after the swallowed one: the matches are taken in the order their values
+		// start, so the earlier secret isn't written out before it's judged.
+		{`gcloud run deploy api --set-env-vars "CACHE_KEY=prod,DB_PASSWORD=hunter2x" --update-secrets API_KEY=Zq7nHRcK2pLw9x`, "hunter2x"},
+		{`gcloud run deploy api --set-env-vars "CACHE_KEY=prod,DB_PASSWORD=hunter2x" --update-secrets API_KEY=Zq7nHRcK2pLw9x`, "Zq7nHRcK2pLw9x"},
+		// QA8-REC-1: a key read as a setting only since 0.1.2 (SECRET_KEY_FILE) is judged as 0.1.1
+		// judged it when 0.1.1's expression matches it, so the pair after it is stripped too.
+		{`gcloud run deploy api --set-env-vars SECRET_KEY_FILE=/secrets/django-key,DB_PASSWORD=hunter2x`, "hunter2x"},
+		{`aws lambda update-function-configuration --function-name api --environment "Variables={JWT_SECRET_KEY_PATH=/opt/jwt.pem,DB_PASSWORD=hunter2x}"`, "hunter2x"},
+		{`helm upgrade --install api ./chart --set app.secret_key_file=/etc/app/key,postgresql.auth.password=hunter2x`, "hunter2x"},
+		{`gcloud run deploy api --set-env-vars=^:^SECRET_KEY_PATH=/k:API_TOKEN=Zq7nHRcK2pLw9x`, "Zq7nHRcK2pLw9x"},
+		{`gcloud run deploy api --set-env-vars SECRET_KEY_LENGTH=50,DB_PASSWORD=hunter2x`, "hunter2x"},
+		{`gcloud run deploy api --set-env-vars TOKEN_KEY_TYPE=RS256,CLIENT_SECRET=hunter2x`, "hunter2x"},
+	} {
+		if out, n := String(c.in); strings.Contains(out, c.secret) || n == 0 {
+			t.Errorf("%q -> %q (%d)", c.in, out, n)
+		}
+	}
+	for _, in := range []string{
+		`gcloud run deploy api --set-env-vars "SORT_KEY=name,REGION=us-east-1"`,
+		`helm upgrade --install api ./chart --set service.cache_key=v1,replicaCount=2`,
+		`aws lambda update-function-configuration --environment "Variables={PRIMARY_KEY=id,CACHE_KEY=users-v2}"`,
+	} {
+		if out, n := String(in); out != in || n != 0 {
+			t.Errorf("%q -> %q (%d)", in, out, n)
+		}
+	}
+}
+
+// QA8-REC-3: a pair both key=value expressions match is counted once, and a value that starts
+// inside one already stripped takes the rest of it.
+func TestMergedKeyValueCounts(t *testing.T) {
+	for _, c := range []struct {
+		in, want string
+		n        int
+	}{
+		{"DB_PASSWORD=hunter2x ./run", "DB_PASSWORD=[redacted] ./run", 1},
+		{`gcloud run deploy api --set-env-vars "CACHE_KEY=prod,DB_PASSWORD=hunter2x"`, `gcloud run deploy api --set-env-vars "CACHE_KEY=prod,DB_PASSWORD=[redacted]"`, 1},
+		{`APP_KEY="base64:Zq7nHRcK2pLw9xAb token='abc" tail' end`, `APP_KEY="[redacted]' end`, 1},
+	} {
+		if out, n := String(c.in); out != c.want || n != c.n {
+			t.Errorf("%q -> %q (%d), want %q (%d)", c.in, out, n, c.want, c.n)
+		}
+	}
+}
+
+// QA7-REC-4: a later flag and a value straddling a quote keep no secret 0.1.1 stripped. A flag
+// match can't start inside another's flag name, so sorting the two flag expressions' matches by
+// match or by value gives the same order (QA8-REC-2); this guards that and the straddle.
+func TestMergedFlagMatchesInOrder(t *testing.T) {
+	for _, c := range []struct{ in, secret string }{
+		{`tool --no-password "curl --token Zq7nHRcK2pLw9x" --password hunter22`, "Zq7nHRcK2pLw9x"},
+		{`tool --no-password "curl --token Zq7nHRcK2pLw9x" --password hunter22`, "hunter22"},
+		{`tool --db-password "a --token 'b" Zq7nHRcK2pLw9x'`, "Zq7nHRcK2pLw9x"},
+		{`tool --DB-PASSWORD "a --TOKEN Zq7nHRcK2pLw9x" --Password hunter22`, "Zq7nHRcK2pLw9x"},
+		{`tool --DB-PASSWORD "a --TOKEN Zq7nHRcK2pLw9x" --Password hunter22`, "hunter22"},
+	} {
+		if out, n := String(c.in); strings.Contains(out, c.secret) || n == 0 {
+			t.Errorf("%q -> %q (%d)", c.in, out, n)
+		}
+	}
+}
+
+// QA9-REC-1 to -3: a value that 0.1.2's own patterns take never crosses a line, so a command on
+// the next line keeps its program name and keys for the patterns 0.1.1 had (mysql -pSECRET,
+// DB_PASSWORD=...), and a Vault-looking prefix on a config key doesn't take the key in.
+func TestNewPatternsStayOnTheirLine(t *testing.T) {
+	for _, c := range []struct{ in, secret string }{
+		{"mongosh -u admin -p\nmysql -u root -pS3cretSEK901 app < dump.sql", "S3cretSEK901"},
+		{"docker exec -it mongo mongosh -u root -p\r\nmysqldump -u root -pS3cretSEK901 app", "S3cretSEK901"},
+		{"redis-cli -h cache.example.com -a\nmysql -u root -pS3cretSEK901 app", "S3cretSEK901"},
+		{"mysql -u root --skip-password\nDB_PASSWORD=\"Pw9SEK9xq\" npm run migrate", "Pw9SEK9xq"},
+		{"helm install app ./chart --set hvs.database_password_value=SEK129secret", "SEK129secret"},
+	} {
+		if out, n := String(c.in); strings.Contains(out, c.secret) || n == 0 {
+			t.Errorf("%q -> %q (%d)", c.in, out, n)
+		}
+	}
+	for _, c := range []struct{ in, kept string }{
+		{"mongosh -u admin -p\nmysql -u root -pS3cretSEK901 app", "mongosh -u admin -p\nmysql"},
+		{"mysql -u root --skip-password\nnpm run migrate", "--skip-password\nnpm run migrate"},
+	} {
+		if out, _ := String(c.in); !strings.Contains(out, c.kept) {
+			t.Errorf("%q -> %q, want it to keep %q", c.in, out, c.kept)
+		}
+	}
+	for _, in := range []string{"vault login hvs.CAESIJlWh3fHzKx9Qp2mLw7Rt5Vb8N", "export VAULT_TOKEN=hvs.CAESIJlWh3fHzKx9Qp2mLw7Rt5Vb8N", "vault login hvs.CAESIAbCdEfGhIjKlMnOpQrStUvWx"} {
+		if out, _ := String(in); strings.Contains(out, "CAESI") {
+			t.Errorf("%q -> %q keeps a Vault token", in, out)
+		}
+	}
+}
+
+// QA5-REC-1: the flag search that lets one flag be taken as another's value stays linear. Chains
+// of flags whose values run to the next blank took seconds at 64 KB when every match was searched
+// again from its value; 0.1.1 takes about 30 ms.
+func TestFlagSearchStaysLinear(t *testing.T) {
+	if raceDetector {
+		t.Skip("timing isn't meaningful under the race detector")
+	}
+	for _, link := range []string{"--token=", "--no-password=", "--password=a", "--no-password ", "--skip-password --password=", "--db-password -"} {
+		in := "x " + strings.Repeat(link, 65536/len(link))
+		start := time.Now()
+		String(in)
+		if el := time.Since(start); el > 500*time.Millisecond {
+			t.Errorf("%q x %d took %v", link, 65536/len(link), el)
+		}
 	}
 }

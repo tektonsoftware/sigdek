@@ -141,7 +141,7 @@ PackageUrl: https://sigdek.com
 License: Apache-2.0
 LicenseUrl: https://github.com/tektonsoftware/sigdek/blob/main/LICENSE
 ShortDescription: ${DESC}.
-Description: SigDek records every command, file edit and web request that Claude Code and Cursor make, in a tamper-evident log, and sends it to your team's SigDek audit log. Prompt text, file contents and command output are never recorded.
+Description: SigDek records what Claude Code's and Cursor's agents do on your machine (which tool, the command, file path or URL, and whether it ran, failed or was blocked) in a hash-chained log, and once you sign in, sends it to your team's SigDek audit log. Prompt text, file contents and command output are never recorded; text an agent writes inside a shell command, such as a heredoc, is part of the recorded command.
 Moniker: sigdek
 Tags:
 - ai

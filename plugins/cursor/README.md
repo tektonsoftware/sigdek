@@ -1,6 +1,6 @@
 # SigDek for Cursor
 
-SigDek records what Cursor's agents do on your machine: who ran which agent, which tool, the command, file path or URL, and whether it ran, failed or was blocked. Your team gets one record across Cursor and Claude Code, and an evidence report that an auditor or a customer's security review can check. Prompt text, file contents and command output are never recorded.
+SigDek records what Cursor's agents do on your machine: who ran which agent, which tool, the command, file path or URL, and whether it ran, failed or was blocked. Your team gets one record across Cursor and Claude Code, and an evidence report that an auditor or a customer's security review can check. Prompt text, file contents and command output are never recorded. Text an agent writes inside a shell command, such as a heredoc, is part of the command, so it is recorded.
 
 The plugin is free and open source (Apache-2.0) and works on its own, keeping records on your machine. Connecting the machine to a team on sigdek.com, a separate paid service with a 14-day trial, adds the shared log, Block rules and reports.
 
@@ -15,7 +15,7 @@ The plugin is free and open source (Apache-2.0) and works on its own, keeping re
 
 - Ask the agent to run your tests. `sigdek log` lists the command and whether it ran.
 - In a throwaway repository, ask the agent to force-push a branch. The built-in rules flag it: `sigdek log` shows `[rule: force-push]`. Out of the box nothing is blocked.
-- With the machine connected, an owner adds a Block rule in the dashboard, such as command `terraform destroy*` with a message. The machine picks it up on its next upload, at most a minute later while you work. Ask the agent to run `terraform destroy`, and Cursor refuses it before it runs, showing your message. `sigdek log` shows it as `denied_by_rule`, and the dashboard as "Blocked by rule".
+- With the machine connected, an owner adds a Block rule in the dashboard, such as command `terraform destroy*` with a message. The machine picks it up on its next upload, at most a minute later while you work. Ask the agent to run `terraform destroy`, and Cursor refuses it before it runs, showing your message. `sigdek log` shows it as `denied_by_rule`, and the dashboard as "Blocked by rule". A glob matches only that wording: `terraform destroy*` misses `terraform -chdir=infra destroy` and `terraform apply -destroy`, which the command pattern `re:\b(terraform|tofu)\s+(-\S+\s+)*(destroy\b|apply\b[^|;&\n]*\s-destroy\b)` also catches.
 
 ## What it runs, downloads, writes and sends
 

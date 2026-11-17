@@ -36,10 +36,10 @@ func ClaudeCode(raw []byte, ctx Context) Result {
 		return r
 	}
 	toolInput := p["tool_input"]
-	action := func(r *event.Record) *event.Action {
-		a, view, n := buildAction(claudeCodeAction(p.str("tool_name"), toolInput), toolInput, cwd)
+	action := func(r *event.Record) []*event.Action {
+		a, views, n := buildAction(claudeCodeAction(p.str("tool_name"), toolInput, cwd), toolInput, cwd)
 		r.Action, r.Redactions = a, n
-		return view
+		return views
 	}
 
 	switch name := p.str("hook_event_name"); name {
@@ -56,22 +56,22 @@ func ClaudeCode(raw []byte, ctx Context) Result {
 	case "PreToolUse":
 		// Most of these write nothing: an allowed action is recorded by PostToolUse once it has
 		// run, so the record (and its redaction) is built only for a denial or a setup change.
-		f := claudeCodeAction(p.str("tool_name"), toolInput)
-		view := actionView(f, cwd)
-		deny := ctx.Rules.Match(view, rules.Deny)
+		f := claudeCodeAction(p.str("tool_name"), toolInput, cwd)
+		views := actionViews(f, cwd)
+		deny := ctx.Rules.MatchAny(views, rules.Deny)
 		var setup *rules.Rule
 		if deny == nil {
 			// A change to SigDek's own setup may leave nothing to record it afterwards.
-			if setup = ctx.Rules.MatchSetup(view); setup == nil {
+			if setup = ctx.Rules.MatchSetupAny(views); setup == nil {
 				return Result{}
 			}
 		}
 		r := rec("action")
-		r.Action, r.Redactions = storedAction(f, view, toolInput)
+		r.Action, r.Redactions = storedAction(f, views[0], toolInput)
 		if deny == nil {
 			return preRecord(r, setup)
 		}
-		blocked(r, view, deny, toolInput)
+		blocked(r, views[0], deny, toolInput)
 		out, _ := json.Marshal(map[string]any{"hookSpecificOutput": map[string]any{
 			"hookEventName":            "PreToolUse",
 			"permissionDecision":       "deny",
@@ -80,7 +80,7 @@ func ClaudeCode(raw []byte, ctx Context) Result {
 		return Result{Record: r, Stdout: append(out, '\n')}
 	case "PostToolUse", "PostToolUseFailure", "PermissionDenied":
 		r := rec("action")
-		view := action(r)
+		views := action(r)
 		switch name {
 		case "PostToolUse":
 			r.Outcome = "ran"
@@ -91,7 +91,7 @@ func ClaudeCode(raw []byte, ctx Context) Result {
 		}
 		// A setup change was also recorded as attempted at PreToolUse; this is its result.
 		r.DurationMS = durationMS(p.num("duration_ms"))
-		applyRule(r, view, ctx.Rules)
+		applyRule(r, views, ctx.Rules)
 		return Result{Record: r}
 	case "SubagentStart", "SubagentStop":
 		evt := "subagent_start"
@@ -140,15 +140,36 @@ func fromCursor(p hookInput) bool {
 	return conversation && generation
 }
 
-func claudeCodeAction(name string, rawInput json.RawMessage) actionFields {
+func claudeCodeAction(name string, rawInput json.RawMessage, cwd string) actionFields {
 	in := decodeObject(rawInput)
 	f := actionFields{Kind: "other", Name: name}
 	switch name {
 	case "Bash":
 		f.Kind, f.Command = "shell", str(in, "command")
+	case "PowerShell":
+		// PowerShell runs its command in PowerShell. Rules and the record treat it as a shell
+		// command (BB-RULE-1).
+		shellCommand(&f, in)
+	case "Monitor":
+		// Monitor runs its command in the shell and watches the output, as a shell command
+		// (BB-RULE-1). Without a command it watches a WebSocket, named by "ws": that is a web
+		// action with that URL, so URL rules see it and the record shows where it connected.
+		// Claude Code sends ws as {"url": ..., "protocols": [...]} (QA3-REC-1); a plain URL
+		// string is read too.
+		if c, _ := in["command"].(string); c == "" {
+			if u := webSocketURL(in["ws"]); u != "" {
+				f.Kind, f.URL = "web", u
+				break
+			}
+		}
+		shellCommand(&f, in)
 	case "Read", "NotebookRead":
 		f.Kind, f.Path = "file_read", str(in, "file_path", "notebook_path")
-	case "Grep", "Glob", "LS":
+	case "Grep":
+		searchFields(&f, str(in, "path"), str(in, "glob"), cwd)
+	case "Glob":
+		searchFields(&f, str(in, "path"), str(in, "pattern"), cwd)
+	case "LS":
 		f.Kind, f.Path = "file_read", str(in, "path")
 	case "Edit", "MultiEdit", "Write", "NotebookEdit":
 		f.Kind, f.Path = "file_edit", str(in, "file_path", "notebook_path")
@@ -159,9 +180,33 @@ func claudeCodeAction(name string, rawInput json.RawMessage) actionFields {
 	default:
 		if server, tool, ok := splitMCP(name); ok {
 			f.Kind, f.MCP = "mcp", &event.MCP{Server: server, Tool: tool}
+		} else {
+			shellCommand(&f, in)
 		}
 	}
 	return f
+}
+
+// shellCommand makes a tool call a shell action when its input has a string "command": a tool
+// that takes a command runs it, as far as rules can tell, so a Block rule on a command stops
+// it whichever tool the agent picks, and the record keeps the command. It covers tools a newer
+// agent version adds before SigDek knows their names; MCP tools are never passed here.
+func shellCommand(f *actionFields, in map[string]any) {
+	if c, ok := in["command"].(string); ok {
+		f.Kind, f.Command = "shell", c
+	}
+}
+
+// webSocketURL reads the address from Monitor's ws input: an object with a string "url", as
+// Claude Code sends it, or the URL as a string.
+func webSocketURL(ws any) string {
+	switch v := ws.(type) {
+	case string:
+		return v
+	case map[string]any:
+		return str(v, "url")
+	}
+	return ""
 }
 
 // splitMCP parses "mcp__<server>__<tool>".

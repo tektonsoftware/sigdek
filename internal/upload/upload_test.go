@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tektonsoftware/sigdek/internal/apierr"
 	"github.com/tektonsoftware/sigdek/internal/config"
 	"github.com/tektonsoftware/sigdek/internal/event"
 	"github.com/tektonsoftware/sigdek/internal/lockfile"
@@ -298,23 +299,106 @@ func TestServerErrorsBackOff(t *testing.T) {
 	}
 }
 
-// CONTRACTS2 3: a 200 means the server took the batch, even when its answer can't be read;
-// up to 4 MB of answer is read.
-func TestA200AlwaysMovesTheCursor(t *testing.T) {
-	var body string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) }))
+// BB-NET-1 (replacing CONTRACTS2 3): a 200 counts as the server taking the batch only when
+// the body is ingest's answer, an object with "accepted". A proxy's page, an empty body or
+// some other JSON leaves the cursor where it was, backs off, and the batch goes up whole once
+// ingest answers. Ingest's own answer that can't be read whole still counts, and up to 4 MB of
+// answer is read.
+func TestOnlyIngestsAnswerMovesTheCursor(t *testing.T) {
+	var body, contentType string
+	var status int
+	var got [][]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Records []json.RawMessage `json:"records"`
+		}
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &req)
+		if body == "" && contentType == "ingest" {
+			got = append(got, req.Records)
+			json.NewEncoder(w).Encode(Response{Accepted: len(req.Records)})
+			return
+		}
+		if contentType != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
+		if status != 0 {
+			w.WriteHeader(status)
+		}
+		w.Write([]byte(body))
+	}))
 	defer srv.Close()
 	home := setup(t, 3, srv.URL)
 	rules.Save(config.RulesPath(home), rules.Set{Version: 2, Rules: []rules.Rule{{ID: "keep", Effect: rules.Flag, Command: "x"}}})
-	body = "<html>proxy login</html>"
+	now := time.Now()
+	o := Options{Now: func() time.Time { return now }}
+	for _, c := range []struct {
+		status            int
+		body, contentType string
+		says              string
+	}{
+		{0, "<html>proxy login</html>", "text/html; charset=utf-8", "HTTP 200, text/html; charset=utf-8"},
+		{0, "", "", "HTTP 200, no content type"},
+		{0, "{}", "application/json", "HTTP 200, application/json"},
+		{0, `{"accepted":null}`, "application/json", "HTTP 200, application/json"},
+		{0, `["accepted",3]`, "application/json", "HTTP 200, application/json"},
+		{0, `{"ok":true,"accepted":`, "application/json", "HTTP 200, application/json"},
+		// QA2-L5-5: a success other than 200 isn't ingest's answer, even with ingest's body.
+		{http.StatusNoContent, "", "", "HTTP 204, no content type"},
+		{http.StatusAccepted, `{"accepted":3}`, "application/json", "HTTP 202, application/json"},
+	} {
+		status, body, contentType = c.status, c.body, c.contentType
+		now = now.Add(2 * time.Hour)
+		sum, err := FlushWith(home, "t", o)
+		var odd *UnexpectedAnswer
+		if !errors.As(err, &odd) || !strings.Contains(err.Error(), c.says) || !strings.Contains(err.Error(), "a proxy or captive portal may be in the way") || sum.Sent != 0 {
+			t.Errorf("%q: sum %+v err %v", c.body, sum, err)
+		}
+		if seq := store.New(home).LoadCursor().Seq; seq != 0 {
+			t.Errorf("%q: the cursor moved to %d", c.body, seq)
+		}
+		if h := LoadHealth(home); h.LastError != err.Error() || !h.RetryAfter.After(now) || !h.LastOK.IsZero() {
+			t.Errorf("%q: health %+v", c.body, h)
+		}
+		if paused, _ := Paused(home, now); !paused {
+			t.Errorf("%q: background uploads don't wait", c.body)
+		}
+	}
+	if got := rules.Load(config.RulesPath(home)); got.Version != 2 {
+		t.Fatalf("rules changed: %+v", got)
+	}
+	// Once ingest answers, the batch goes up whole: no gap.
+	status, body, contentType = 0, "", "ingest"
+	if sum, err := Flush(home, "t", nil); err != nil || sum.Sent != 3 || len(got) != 1 || len(got[0]) != 3 {
+		t.Fatalf("sum %+v err %v batches %d", sum, err, len(got))
+	}
+	if h := LoadHealth(home); h.LastError != "" || h.Fails != 0 || !h.RetryAfter.IsZero() {
+		t.Fatalf("health not cleared: %+v", h)
+	}
+
+	// Ingest's answer cut off after "accepted": the count stands, the rules stay.
+	setupMore(t, home, 1)
+	body, contentType = `{"accepted":1,"duplicates":0,"rules":{"version":7,"rules":[{"id":"cut`, "application/json"
 	var logged []error
 	sum, err := FlushWith(home, "t", Options{Log: func(e error) { logged = append(logged, e) }})
-	if err != nil || sum.Sent != 3 || store.New(home).LoadCursor().Seq != 3 || len(logged) != 1 || !strings.Contains(logged[0].Error(), "couldn't be read") {
+	if err != nil || sum.Sent != 1 || sum.Accepted != 1 || store.New(home).LoadCursor().Seq != 4 || len(logged) != 1 ||
+		!strings.Contains(logged[0].Error(), "the server's answer says it accepted 1 of 1 records, but the rest of it couldn't be read") {
 		t.Fatalf("sum %+v err %v logged %v", sum, err, logged)
 	}
 	if got := rules.Load(config.RulesPath(home)); got.Version != 2 {
 		t.Fatalf("rules changed: %+v", got)
 	}
+	// Rules the recorder can't read in an otherwise whole answer: the same.
+	setupMore(t, home, 1)
+	body = `{"accepted":1,"rules":{"version":"seven"}}`
+	logged = nil
+	if sum, err := FlushWith(home, "t", Options{Log: func(e error) { logged = append(logged, e) }}); err != nil || sum.Accepted != 1 || len(logged) != 1 {
+		t.Fatalf("sum %+v err %v logged %v", sum, err, logged)
+	}
+	if got := rules.Load(config.RulesPath(home)); got.Version != 2 {
+		t.Fatalf("rules changed: %+v", got)
+	}
+
 	// The largest rule set the service allows (200 rules, each field at its cap) is over the
 	// old 1 MB read limit, and arrives whole.
 	big := rules.Set{Version: 3}
@@ -334,6 +418,79 @@ func TestA200AlwaysMovesTheCursor(t *testing.T) {
 	}
 	if got := rules.Load(config.RulesPath(home)); got.Version != 3 || len(got.Rules) != 200 {
 		t.Fatalf("large rule set: version %d, %d rules", got.Version, len(got.Rules))
+	}
+}
+
+// BB-NET-1, BB-NET-7: uploads follow no redirect. A 3xx is an error that says where it
+// points; the cursor stays, nothing is sent to the other address, the token isn't called
+// rejected, and uploads back off.
+func TestRedirectsAreNotFollowed(t *testing.T) {
+	var landed []string
+	landing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		landed = append(landed, r.Method+" "+r.URL.Path)
+		w.Write([]byte("<html>welcome</html>"))
+	}))
+	defer landing.Close()
+	var status int
+	var to string
+	ing := &fakeIngest{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if status != 0 {
+			http.Redirect(w, r, to, status)
+			return
+		}
+		ing.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	home := setup(t, 3, srv.URL)
+	now := time.Now()
+	o := Options{Now: func() time.Time { return now }}
+	for _, c := range []struct {
+		status int
+		to     string
+	}{
+		{http.StatusMovedPermanently, landing.URL + "/landing"},
+		{http.StatusFound, landing.URL + "/landing"},
+		{http.StatusTemporaryRedirect, landing.URL + "/landing"},
+		{http.StatusPermanentRedirect, landing.URL + "/v1/events"},
+		{http.StatusMovedPermanently, "/elsewhere"},
+	} {
+		status, to = c.status, c.to
+		now = now.Add(2 * time.Hour)
+		sum, err := FlushWith(home, "t", o)
+		want := c.to
+		if strings.HasPrefix(want, "/") {
+			want = srv.URL + want
+		}
+		var api *apierr.Error
+		if !errors.As(err, &api) || api.Status != c.status || !strings.Contains(err.Error(), "the server answered with a redirect to "+want) || sum.Sent != 0 {
+			t.Errorf("%d: sum %+v err %v", c.status, sum, err)
+		}
+		if errors.Is(err, ErrRevoked) {
+			t.Errorf("%d: called the token rejected", c.status)
+		}
+		if _, err := os.Stat(config.TokenRejected(home)); err == nil {
+			t.Errorf("%d: token-rejected marker written", c.status)
+		}
+		if seq := store.New(home).LoadCursor().Seq; seq != 0 {
+			t.Errorf("%d: the cursor moved to %d", c.status, seq)
+		}
+		if h := LoadHealth(home); !h.RetryAfter.After(now) {
+			t.Errorf("%d: no back-off: %+v", c.status, h)
+		}
+	}
+	if len(landed) != 0 {
+		t.Fatalf("followed a redirect: %v", landed)
+	}
+	status = 0
+	if sum, err := Flush(home, "t", nil); err != nil || sum.Sent != 3 {
+		t.Fatalf("sum %+v err %v", sum, err)
+	}
+	// A client passed in that follows redirects is made not to.
+	setupMore(t, home, 1)
+	status, to = http.StatusTemporaryRedirect, landing.URL+"/v1/events"
+	if _, err := Flush(home, "t", &http.Client{}); err == nil || len(landed) != 0 {
+		t.Fatalf("err %v landed %v", err, landed)
 	}
 }
 

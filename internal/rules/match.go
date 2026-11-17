@@ -17,31 +17,54 @@ import (
 // A command is matched in two forms, and a rule matches if it matches either: as sent with
 // runs of blanks squeezed to one space, and as the shell reads its words (see Normalize), so
 // `git push \<newline> --force`, `r\m -rf` and `rm "-rf"` read as what they run. Block rules
-// read both forms whole, however long, so padding can't hide a command from them. Flag rules
-// only label what is recorded, and read at most FlagScanLimit bytes of each (see View).
+// read both forms whole, up to the hook's 8 MB of input (hook.MaxStdin), so padding can't hide a
+// command from them. Flag rules only label what is recorded, and read at most FlagScanLimit
+// bytes of each (see View).
 func (s Set) Match(a *event.Action, effect string) *Rule {
-	return s.match(a, effect, nil)
+	return s.match([]*event.Action{a}, effect, nil)
+}
+
+// MatchAny is Match for an action rules see in more than one form, such as a search named
+// both by the folder it looks in and by that folder joined with its glob: it returns the first
+// rule, in rule order, that matches any of the forms.
+func (s Set) MatchAny(forms []*event.Action, effect string) *Rule {
+	return s.match(forms, effect, nil)
 }
 
 // MatchSetup returns the first Flag rule about SigDek's own setup (an id starting
 // "sigdek-setup") that matches the action.
 func (s Set) MatchSetup(a *event.Action) *Rule {
-	return s.match(a, Flag, func(r *Rule) bool { return IsSetupRule(r.ID) })
+	return s.MatchSetupAny([]*event.Action{a})
+}
+
+// MatchSetupAny is MatchSetup for an action in more than one form (see MatchAny).
+func (s Set) MatchSetupAny(forms []*event.Action) *Rule {
+	return s.match(forms, Flag, func(r *Rule) bool { return IsSetupRule(r.ID) })
 }
 
 // IsSetupRule reports whether a rule flags changes to SigDek's own setup, which can switch
 // the recorder off, so such an action is recorded before it runs.
 func IsSetupRule(id string) bool { return strings.HasPrefix(id, "sigdek-setup") }
 
-func (s Set) match(a *event.Action, effect string, only func(*Rule) bool) *Rule {
-	if a == nil {
+func (s Set) match(forms []*event.Action, effect string, only func(*Rule) bool) *Rule {
+	subs := make([]subject, 0, len(forms))
+	for _, a := range forms {
+		if a != nil {
+			subs = append(subs, subject{a: a, whole: effect == Deny})
+		}
+	}
+	if len(subs) == 0 {
 		return nil
 	}
-	sub := &subject{a: a, whole: effect == Deny}
 	for i := range s.Rules {
 		r := &s.Rules[i]
-		if r.Effect == effect && (only == nil || only(r)) && r.matches(sub) {
-			return r
+		if r.Effect != effect || (only != nil && !only(r)) {
+			continue
+		}
+		for j := range subs {
+			if r.matches(&subs[j]) {
+				return r
+			}
 		}
 	}
 	return nil
@@ -292,11 +315,12 @@ func Normalize(s string) string {
 	b.Grow(len(s))
 	var quote byte
 	blank, cmdPos, inWord := false, true, false
+	op := false // the last character written is an unquoted | or &
 	emit := func(c byte) {
 		if blank && b.Len() > 0 && last(&b) != '\n' {
 			b.WriteByte(' ')
 		}
-		blank = false
+		blank, op = false, false
 		if cmdPos && 'A' <= c && c <= 'Z' {
 			c += 'a' - 'A'
 		}
@@ -353,6 +377,10 @@ func Normalize(s string) string {
 		case c == ' ' || c == '\t' || c == '\r' || (c == '\n' && quote != 0):
 			blank = true
 			endWord()
+		case c == '\n' && op && continues(&b):
+			// After | |& && or ||, the shell reads on past the newline: one command (BB-XR-4).
+			blank = true
+			endWord()
 		case c == '\n':
 			blank, cmdPos, inWord = false, true, false
 			if b.Len() > 0 && last(&b) != '\n' {
@@ -360,12 +388,20 @@ func Normalize(s string) string {
 			}
 		case quote == 0 && (c == ';' || c == '|' || c == '&' || c == '(' || c == '`'):
 			emit(c)
-			cmdPos, inWord = true, false
+			cmdPos, inWord, op = true, false, c == '|' || c == '&'
 		default:
 			emit(c)
 		}
 	}
 	return b.String()
+}
+
+// continues reports whether the output so far ends in an operator after which the shell
+// reads on past a newline: a pipe, |&, && or || (which ends in |). A lone & ends the command.
+// Normalize checks it only right after an unquoted | or &.
+func continues(b *strings.Builder) bool {
+	t := b.String() // no copy
+	return strings.HasSuffix(t, "|") || strings.HasSuffix(t, "&&") || strings.HasSuffix(t, "|&")
 }
 
 // ifsRef returns the length of a reference to IFS at the start of s ($IFS or ${IFS}), or 0.

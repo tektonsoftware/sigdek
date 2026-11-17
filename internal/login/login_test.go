@@ -328,3 +328,30 @@ func TestLoginCountsRecordsAndClearsUploadErrors(t *testing.T) {
 		t.Fatalf("first sign-in: %+v %v", reg, err)
 	}
 }
+
+// BB-NET-7: sign-in and logout follow no redirect. A 3xx is reported with where it points,
+// and nothing (no POST turned into a GET, no token) reaches the other address.
+func TestLoginAndLogoutFollowNoRedirect(t *testing.T) {
+	var landed atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { landed.Add(1) }))
+	defer other.Close()
+	for _, status := range []int{http.StatusMovedPermanently, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, other.URL+r.URL.Path, status)
+		}))
+		_, err := signIn(t, redirect)
+		if err == nil || !strings.Contains(err.Error(), "starting sign-in: the server answered with a redirect to "+other.URL+"/api/auth/device/code") {
+			t.Errorf("%d: sign-in: %v", status, err)
+		}
+		home := t.TempDir()
+		config.SaveDevice(home, config.Device{ID: "dev_local", Token: "sdt_x", AppURL: redirect.URL})
+		res, err := Logout(home, nil)
+		if err != nil || res.RevokeErr == nil || !strings.Contains(res.RevokeErr.Error(), "redirect to "+other.URL+"/api/devices/self/revoke") {
+			t.Errorf("%d: logout: %+v %v", status, res, err)
+		}
+		redirect.Close()
+	}
+	if n := landed.Load(); n != 0 {
+		t.Fatalf("%d requests followed a redirect", n)
+	}
+}

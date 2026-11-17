@@ -1014,8 +1014,10 @@ Run ` + "`sigdek init`" + ` again to write them all in one form; ` + "`sigdek st
 	}
 	b.WriteString(`
 What is recorded: who ran which agent, which tool, the command or file path, and whether
-it ran or was blocked. Prompt text, file contents and command output are never recorded;
-secrets in commands are stripped. Nothing leaves your machine until you run ` + "`sigdek login`" + `.
+it ran or was blocked. Prompt text, file contents and command output are never recorded, but
+a command is kept as the agent sent it (up to 4 KB), so text written inside one, such as a
+heredoc, is in the record. Secrets in common formats are stripped from commands (best
+effort). Nothing leaves your machine until you run ` + "`sigdek login`" + `.
 
 Source and documentation: https://github.com/tektonsoftware/sigdek
 `)

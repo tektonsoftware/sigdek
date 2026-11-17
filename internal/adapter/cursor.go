@@ -75,10 +75,10 @@ func Cursor(raw []byte, ctx Context, hint string) Result {
 		return r
 	}
 	toolInput := p["tool_input"]
-	action := func(r *event.Record) *event.Action {
-		a, view, n := buildAction(cursorAction(p.str("tool_name"), toolInput), toolInput, cwd)
+	action := func(r *event.Record) []*event.Action {
+		a, views, n := buildAction(cursorAction(p.str("tool_name"), toolInput, cwd), toolInput, cwd)
 		r.Action, r.Redactions = a, n
-		return view
+		return views
 	}
 	ok := CursorAllowFor(name)
 
@@ -93,29 +93,29 @@ func Cursor(raw []byte, ctx Context, hint string) Result {
 		return Result{Record: r, Stdout: ok}
 	case "preToolUse":
 		// As for Claude Code: the record is built only for a denial or a setup change.
-		f := cursorAction(p.str("tool_name"), toolInput)
-		view := actionView(f, cwd)
-		deny := ctx.Rules.Match(view, rules.Deny)
+		f := cursorAction(p.str("tool_name"), toolInput, cwd)
+		views := actionViews(f, cwd)
+		deny := ctx.Rules.MatchAny(views, rules.Deny)
 		var setup *rules.Rule
 		if deny == nil {
-			if setup = ctx.Rules.MatchSetup(view); setup == nil {
+			if setup = ctx.Rules.MatchSetupAny(views); setup == nil {
 				return Result{Stdout: ok}
 			}
 		}
 		r := rec("action")
-		r.Action, r.Redactions = storedAction(f, view, toolInput)
+		r.Action, r.Redactions = storedAction(f, views[0], toolInput)
 		if deny == nil {
 			res := preRecord(r, setup)
 			res.Stdout = ok
 			return res
 		}
-		blocked(r, view, deny, toolInput)
+		blocked(r, views[0], deny, toolInput)
 		msg := denyMessage(deny)
 		out, _ := json.Marshal(map[string]string{"permission": "deny", "user_message": msg, "agent_message": msg})
 		return Result{Record: r, Stdout: append(out, '\n')}
 	case "postToolUse", "postToolUseFailure":
 		r := rec("action")
-		view := action(r)
+		views := action(r)
 		r.Outcome = "ran"
 		if name == "postToolUseFailure" {
 			r.Outcome = "failed"
@@ -126,7 +126,7 @@ func Cursor(raw []byte, ctx Context, hint string) Result {
 		}
 		// A setup change was also recorded as attempted at preToolUse; this is its result.
 		r.DurationMS = durationMS(p.num("duration_ms", "duration"))
-		applyRule(r, view, ctx.Rules)
+		applyRule(r, views, ctx.Rules)
 		return Result{Record: r, Stdout: ok}
 	case "subagentStart":
 		r := rec("subagent_start")
@@ -148,8 +148,9 @@ func Cursor(raw []byte, ctx Context, hint string) Result {
 }
 
 // cursorAction maps Cursor's tool names, which are less settled than Claude Code's, by
-// what they contain. Unknown tools are recorded as "other" with their name.
-func cursorAction(name string, rawInput json.RawMessage) actionFields {
+// what they contain. An unknown tool whose input has a string "command" is a shell action, as
+// for Claude Code; other unknown tools are recorded as "other" with their name.
+func cursorAction(name string, rawInput json.RawMessage, cwd string) actionFields {
 	in := decodeObject(rawInput)
 	f := actionFields{Kind: "other", Name: name}
 	n := strings.ToLower(name)
@@ -175,14 +176,20 @@ func cursorAction(name string, rawInput json.RawMessage) actionFields {
 	case strings.Contains(n, "edit") || strings.Contains(n, "write") || strings.Contains(n, "delete") ||
 		strings.Contains(n, "replace") || strings.Contains(n, "patch") || strings.Contains(n, "create_file"):
 		f.Kind, f.Path = "file_edit", str(in, "file_path", "path", "target_file", "filename")
-	case strings.Contains(n, "read") || strings.Contains(n, "grep") || strings.Contains(n, "glob") ||
-		strings.Contains(n, "list_dir") || strings.Contains(n, "search"):
+	case (strings.Contains(n, "grep") || strings.Contains(n, "glob")) && !strings.Contains(n, "web"):
+		// Cursor's grep takes a glob (or, in older versions, an include pattern) and its glob
+		// search a glob_pattern; matched as for Claude Code's Grep and Glob (BB-HOOK-2).
+		searchFields(&f, str(in, "file_path", "path", "target_file", "target_directory"),
+			str(in, "glob", "glob_pattern", "include_pattern", "include"), cwd)
+	case strings.Contains(n, "read") || strings.Contains(n, "list_dir") || strings.Contains(n, "search"):
 		f.Kind, f.Path = "file_read", str(in, "file_path", "path", "target_file", "target_directory")
 		if strings.Contains(n, "web") {
 			f.Kind, f.Path = "web", ""
 		}
 	case strings.Contains(n, "web") || strings.Contains(n, "fetch") || strings.Contains(n, "browser"):
 		f.Kind, f.URL = "web", str(in, "url")
+	default:
+		shellCommand(&f, in)
 	}
 	return f
 }

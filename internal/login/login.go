@@ -73,9 +73,7 @@ type Options struct {
 
 // Login runs the whole flow and saves the device token.
 func Login(o Options) (*Registration, error) {
-	if o.Client == nil {
-		o.Client = &http.Client{Timeout: 30 * time.Second}
-	}
+	o.Client = apierr.NoRedirects(o.Client, 30*time.Second)
 	if o.Sleep == nil {
 		o.Sleep = time.Sleep
 	}
@@ -231,9 +229,7 @@ func Logout(home string, client *http.Client) (LogoutResult, error) {
 	if err != nil || !dev.SignedIn() {
 		return LogoutResult{}, err
 	}
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
-	}
+	client = apierr.NoRedirects(client, 10*time.Second)
 	app := dev.AppURL
 	if app == "" {
 		app = dev.App()
@@ -271,7 +267,7 @@ func postJSON(c *http.Client, url, bearer string, body any, out any) error {
 		_ = json.Unmarshal(data, out) // error bodies carry {error: ...} too
 	}
 	if res.StatusCode >= 300 {
-		return apierr.New(url, res.StatusCode, data)
+		return apierr.FromResponse(url, res, data)
 	}
 	return nil
 }
