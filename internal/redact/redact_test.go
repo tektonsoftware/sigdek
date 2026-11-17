@@ -284,11 +284,14 @@ func TestRound3Redaction(t *testing.T) {
 
 // Expressions are compiled when first used, not at start-up; every one of them compiles.
 func TestEveryExpressionCompiles(t *testing.T) {
-	for _, l := range []*lazyRE{keyValue, messageArg, varRef, secretWord, namedSecret, hexKey, keyAlphabet, flagWord} {
+	for _, l := range []*lazyRE{keyValue, keyValue011, messageArg, varRef, secretWord, secretWord011, namedSecret, hexKey, keyAlphabet, flagWord} {
 		l.get()
 	}
 	for _, p := range patterns {
 		p.re.get()
+		if p.also != nil {
+			p.also.get()
+		}
 	}
 }
 
@@ -703,6 +706,36 @@ func TestMergedFlagMatchesInOrder(t *testing.T) {
 	} {
 		if out, n := String(c.in); strings.Contains(out, c.secret) || n == 0 {
 			t.Errorf("%q -> %q (%d)", c.in, out, n)
+		}
+	}
+}
+
+// QA9-REC-1 to -3: a value that 0.1.2's own patterns take never crosses a line, so a command on
+// the next line keeps its program name and keys for the patterns 0.1.1 had (mysql -pSECRET,
+// DB_PASSWORD=...), and a Vault-looking prefix on a config key doesn't take the key in.
+func TestNewPatternsStayOnTheirLine(t *testing.T) {
+	for _, c := range []struct{ in, secret string }{
+		{"mongosh -u admin -p\nmysql -u root -pS3cretSEK901 app < dump.sql", "S3cretSEK901"},
+		{"docker exec -it mongo mongosh -u root -p\r\nmysqldump -u root -pS3cretSEK901 app", "S3cretSEK901"},
+		{"redis-cli -h cache.example.com -a\nmysql -u root -pS3cretSEK901 app", "S3cretSEK901"},
+		{"mysql -u root --skip-password\nDB_PASSWORD=\"Pw9SEK9xq\" npm run migrate", "Pw9SEK9xq"},
+		{"helm install app ./chart --set hvs.database_password_value=SEK129secret", "SEK129secret"},
+	} {
+		if out, n := String(c.in); strings.Contains(out, c.secret) || n == 0 {
+			t.Errorf("%q -> %q (%d)", c.in, out, n)
+		}
+	}
+	for _, c := range []struct{ in, kept string }{
+		{"mongosh -u admin -p\nmysql -u root -pS3cretSEK901 app", "mongosh -u admin -p\nmysql"},
+		{"mysql -u root --skip-password\nnpm run migrate", "--skip-password\nnpm run migrate"},
+	} {
+		if out, _ := String(c.in); !strings.Contains(out, c.kept) {
+			t.Errorf("%q -> %q, want it to keep %q", c.in, out, c.kept)
+		}
+	}
+	for _, in := range []string{"vault login hvs.CAESIJlWh3fHzKx9Qp2mLw7Rt5Vb8N", "export VAULT_TOKEN=hvs.CAESIJlWh3fHzKx9Qp2mLw7Rt5Vb8N", "vault login hvs.CAESIAbCdEfGhIjKlMnOpQrStUvWx"} {
+		if out, _ := String(in); strings.Contains(out, "CAESI") {
+			t.Errorf("%q -> %q keeps a Vault token", in, out)
 		}
 	}
 }

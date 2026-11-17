@@ -73,7 +73,7 @@ var patterns = []pattern{
 	{re: lazy(`\bhf_[A-Za-z0-9]{30,}\b`)},                                                          // Hugging Face
 	{re: lazy(`\bdop_v1_[a-f0-9]{64}\b`)},                                                          // DigitalOcean
 	{re: lazy(`\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b`)},             // JWT
-	{re: lazy(`\bhv[sbr]\.[A-Za-z0-9_\-]{20,}`)},                                                   // HashiCorp Vault
+	{re: lazy(`\bhv[sbr]\.[A-Za-z0-9_\-]{20,}`), keep: lowerWord},                                  // HashiCorp Vault
 	// A token given as a URL's user, with no password: https://<token>@github.com/...
 	{re: lazy(`(?i)\bhttps?://([A-Za-z0-9_\-]{32,})@[^\s/@?#'"]+`), group: 1},
 	// Credentials embedded in URLs: scheme://user:password@host, where the user may be empty
@@ -97,8 +97,8 @@ var patterns = []pattern{
 	{re: lazy(`\baws\s+configure\s+set\s+(?:\S+\.)?(?:aws_secret_access_key|aws_session_token)\s+(?:'([^']*)'|"([^"]*)"|([^\s'"]+))`), group: -1},
 	{re: lazy(`\bsshpass\s+(?:-\S+\s+)*?-p\s*(?:'([^']*)'|"([^"]*)"|([^\s'"]+))`), group: -1},
 	{re: lazy(`\bhtpasswd\s+(?:-\w+\s+)*-\w*b\w*\s+(?:-\w+\s+)*(?:\S+\s+)??\S+\s+(?:'([^']*)'|"([^"]*)"|([^\s'"|;&]+))\s*(?:$|[|;&\n])`), group: -1},
-	{re: lazy(`\bredis-cli\b[^|;&\n]*?\s-a\s+(?:'([^']*)'|"([^"]*)"|([^\s'"|;&]+))`), group: -1, heuristic: true},                     // redis-cli -a
-	{re: lazy(mongoCommand + `\s(?:[^|;&\n]*?\s)?-p\s+(?:'([^']*)'|"([^"]*)"|([^-\s'"|;&][^\s'"|;&]*))`), group: -1, heuristic: true}, // mongosh -p
+	{re: lazy(`\bredis-cli\b[^|;&\n]*?\s-a[ \t]+(?:'([^']*)'|"([^"]*)"|([^\s'"|;&]+))`), group: -1, heuristic: true},                     // redis-cli -a
+	{re: lazy(mongoCommand + `\s(?:[^|;&\n]*?\s)?-p[ \t]+(?:'([^']*)'|"([^"]*)"|([^-\s'"|;&][^\s'"|;&]*))`), group: -1, heuristic: true}, // mongosh -p
 	{re: lazy(`\b(?:mysql|mysqldump|mariadb)\b[^\n|;&]*\s-p([^\s'"]+)`), group: 1},
 	{re: lazy(`(?i)(?:^|[^A-Za-z0-9])(?:_authToken|_auth|_password)(?:\s*=\s*|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"]+))`), group: -1},
 	// Authorization and cookie headers.
@@ -107,7 +107,7 @@ var patterns = []pattern{
 	{re: lazy(`(?i)\b(?:bearer|token)\s+([A-Za-z0-9_\-\.=+/]{16,})`), group: 1, heuristic: true, keep: noDigit},
 	// --password VALUE style flags, also with a word before the name: --http-password,
 	// --db-password, --github-token. --no-password and the like take no value.
-	{re: lazy(`(?i)--(?:[a-z]+-)?(?:password|passwd|secret|token|api-key|apikey|access-key|account-key|client-secret|auth-token)(?:=|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`), group: -1, heuristic: true, keep: flagWithoutValue, overlap: true,
+	{re: lazy(`(?i)--(?:[a-z]+-)?(?:password|passwd|secret|token|api-key|apikey|access-key|account-key|client-secret|auth-token)(?:=|[ \t]+)(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`), group: -1, heuristic: true, keep: flagWithoutValue, overlap: true,
 		also: lazy(`(?i)--(?:password|passwd|secret|token|api-key|apikey|access-key|account-key|client-secret|auth-token)(?:=|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"&;|]+))`)},
 }
 
@@ -446,6 +446,12 @@ func notMixed(_ string, _ []int, v string) bool {
 		digit = digit || unicode.IsDigit(r)
 	}
 	return !(upper && lower && digit)
+}
+
+// lowerWord vetoes a Vault-looking match with no upper case and no digit, such as a config key
+// in a namespace named hvs (--set hvs.database_password_value=...), which a token never is (QA9-REC-3).
+func lowerWord(_ string, _ []int, v string) bool {
+	return !strings.ContainsFunc(v, func(r rune) bool { return unicode.IsUpper(r) || unicode.IsDigit(r) })
 }
 
 // noDigit vetoes "token <word>" matches without a digit: prose, not a credential.
